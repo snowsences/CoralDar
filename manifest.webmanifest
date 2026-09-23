@@ -9,7 +9,7 @@
   "background_color":"#081516",
   "theme_color":"#0c2022",
   "icons":[
-    {"src":"app-icon.png?v=1","sizes":"512x512","type":"image/png","purpose":"any"},
-    {"src":"app-icon-maskable.png?v=1","sizes":"512x512","type":"image/png","purpose":"maskable"}
+    {"src":"app-icon.png","sizes":"512x512","type":"image/png","purpose":"any"},
+    {"src":"app-icon-maskable.png","sizes":"512x512","type":"image/png","purpose":"maskable"}
   ]
 }

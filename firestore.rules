@@ -11,13 +11,16 @@ service cloud.firestore {
     }
 
     function knownCollection(collection) {
-      return collection in ['tests', 'waterChanges', 'doses', 'fishEntries', 'corals', 'tankVisual', 'goals'];
+      return collection in ['tests', 'waterChanges', 'doses', 'fishEntries', 'corals', 'coralNotes', 'tankVisual', 'goals'];
     }
 
     match /coraldarUsers/{uid}/{collection}/{docId} {
       allow read, delete: if isOwner(uid) && knownCollection(collection);
       allow create, update: if isOwner(uid) && knownCollection(collection)
-        && request.resource.data.id == docId;
+        && request.resource.data.id == docId
+        && (!('photos' in request.resource.data)
+            || (request.resource.data.photos is list && request.resource.data.photos.size() <= 50))
+        && (collection != 'coralNotes' || request.resource.data.coralId is string);
     }
 
     // Everything else is denied by default.

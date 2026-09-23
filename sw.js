@@ -1,9 +1,9 @@
 'use strict';
 
 // App-shell cache only. Private reef data lives in Firestore's IndexedDB cache, never here.
-const SHELL_CACHE = 'coraldar-shell-v5';
+const SHELL_CACHE = 'coraldar-shell-v6';
 const FONT_CACHE = 'coraldar-fonts-v1';
-const SHELL = ['./','index.html','styles.css','app.js','firebase-init.js','manifest.webmanifest','app-icon.png','app-icon-maskable.png',
+const SHELL = ['./','index.html','styles.css','app.js','manifest.webmanifest','app-icon.png','app-icon-maskable.png',
   'vendor/firebase/12.18.0/firebase-app.js','vendor/firebase/12.18.0/firebase-auth.js','vendor/firebase/12.18.0/firebase-firestore.js'];
 const NETWORK_TIMEOUT = 4000;
 
@@ -22,8 +22,7 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
   if (url.origin === location.origin) {
-    if (url.searchParams.has('_coraldar_release')) return; // release check must reach the network
-    // Cache keys drop the ?v= query so asset version bumps replace entries instead of piling up.
+        // Cache keys drop query strings so each file has exactly one cache entry.
     const key = url.origin + url.pathname;
     if (url.pathname.includes('/vendor/')) return e.respondWith(cacheFirst(req, key));
     return e.respondWith(networkFirst(req, key));
@@ -43,7 +42,8 @@ async function cacheFirst(req, key) {
 async function networkFirst(req, key) {
   const cache = await caches.open(SHELL_CACHE);
   const cached = () => cache.match(key).then(hit => hit || (req.mode === 'navigate' ? cache.match(new URL('./', self.registration.scope).href) : undefined));
-  const network = fetch(req).then(res => {
+  // no-cache revalidates with the server (cheap 304s) so a deploy shows up on the next load.
+  const network = fetch(req, {cache:'no-cache'}).then(res => {
     if (res.ok && res.type === 'basic') cache.put(key, res.clone());
     return res;
   });
@@ -61,7 +61,8 @@ async function networkFirst(req, key) {
 async function staleWhileRevalidate(req) {
   const cache = await caches.open(FONT_CACHE);
   const hit = await cache.match(req);
-  const network = fetch(req).then(res => { if (res.ok || res.type === 'opaque') cache.put(req, res.clone()); return res; });
+  // no-cache revalidates with the server (cheap 304s) so a deploy shows up on the next load.
+  const network = fetch(req, {cache:'no-cache'}).then(res => { if (res.ok || res.type === 'opaque') cache.put(req, res.clone()); return res; });
   if (hit) { network.catch(() => {}); return hit; }
   return network;
 }
