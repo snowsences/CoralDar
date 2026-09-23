@@ -1,10 +1,10 @@
 'use strict';
 
-const RELEASE = 3;
+const RELEASE = 5;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
-const STORAGE_KEY = 'coraldar-v1';
+const STORAGE_KEY = 'coraldar-v1'; // legacy local mirror; migrated to Firestore's offline cache on sign-in
 const TAB_KEY = 'coraldar-active-tab';
 const BACKUP_FORMAT = 'coraldar-encrypted-backup';
 const COLLECTIONS = ['tests','waterChanges','doses','fishEntries','corals','tankVisual','goals'];
@@ -21,14 +21,13 @@ const NAV = [
 
 const $ = s => document.querySelector(s);
 const main = $('#main'), nav = $('#mainNav'), primaryAction = $('#primaryAction'), editorDialog = $('#editorDialog'), editorForm = $('#editorForm'), settingsDialog = $('#settingsDialog');
-let data = loadData();
+let data = emptyData();
 let activeTab = localStorage.getItem(TAB_KEY) || 'testing';
-let testType = 'temperature', testRange = '3m', fishTab = FISH_TABS[0][0], coralTab = '', firebase = null, currentUser = null, unsubscribers = [], toastTimer;
+let testType = 'temperature', testRange = '3m', fishTab = FISH_TABS[0][0], coralTab = '', firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, cacheReady = Promise.resolve(), pendingSync = {};
 
 function emptyData(){ return {tests:[],waterChanges:[],doses:[],fishEntries:[],corals:[],tankVisual:[],goals:[],settings:{schema:1}}; }
-function loadData(){ try{return normalizeData(JSON.parse(localStorage.getItem(STORAGE_KEY)||'{}'))}catch{return emptyData()} }
-function saveLocal(){ localStorage.setItem(STORAGE_KEY,JSON.stringify(data)); }
-function clearPrivateLocal(){ localStorage.removeItem(STORAGE_KEY); data=emptyData(); }
+function readLegacyLocal(){ try{const raw=localStorage.getItem(STORAGE_KEY);return raw?normalizeData(JSON.parse(raw)):null}catch{return null} }
+function clearPrivateLocal(){ localStorage.removeItem(STORAGE_KEY); data=emptyData(); pendingSync={}; }
 const esc = value => String(value??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 const safeText = (value,max=1000) => String(value??'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g,' ').trim().slice(0,max);
 const safeId = value => /^[A-Za-z0-9_-]{1,128}$/.test(String(value||'')) ? String(value) : crypto.randomUUID();
@@ -116,27 +115,38 @@ editorForm.onsubmit=async e=>{e.preventDefault();const fd=new FormData(editorFor
   if(kind==='coralNote'){collection='corals';const coral=data.corals.find(x=>x.id===editorForm.dataset.parent);if(!coral)return;record={...coral,notes:[...coral.notes,{id:uid(),date:safeDate(fd.get('date'))||today(),text:safeText(fd.get('text'),4000),createdAt:now}]} ;record.id=coral.id}
   if(kind==='visual'){collection='tankVisual';const old=findKind('visual',id);record={id,date:safeDate(fd.get('date'))||today(),notes:safeText(fd.get('notes'),2000),photos:old?.photos||[],createdAt:old?.createdAt||now}}
   if(kind==='goal'){collection='goals';const old=findKind('goal',id);record={id,title:safeText(fd.get('title'),200),targetDate:safeDate(fd.get('targetDate')),notes:safeText(fd.get('notes'),3000),photos:old?.photos||[],createdAt:old?.createdAt||now}}
-  if(!record)return;upsertLocal(collection,record);editorDialog.close();render();toast('Saved');await cloudSet(collection,record);
+  if(!record)return;upsertLocal(collection,record);editorDialog.close();render();toast('Saved');cloudSet(collection,record);
 };
-function upsertLocal(collection,record){const a=data[collection],i=a.findIndex(x=>x.id===record.id);if(i>=0)a[i]=record;else a.push(record);saveLocal()}
-async function deleteItem(kind,id,confirmed=false){const map={test:'tests',water:'waterChanges',dose:'doses',fish:'fishEntries',coral:'corals',visual:'tankVisual',goal:'goals'},collection=map[kind];if(!collection)return;const item=data[collection].find(x=>x.id===id);if(!item)return;const label=kind==='coral'?`Delete ${item.name} and all of its notes?`:'Delete this entry?';if(!confirmed&&!confirm(label))return;if(confirmed&&!confirm(label))return;data[collection]=data[collection].filter(x=>x.id!==id);if(kind==='coral'&&coralTab===id)coralTab=data.corals[0]?.id||'';saveLocal();render();toast('Deleted');await cloudDelete(collection,id)}
+function upsertLocal(collection,record){const a=data[collection],i=a.findIndex(x=>x.id===record.id);if(i>=0)a[i]=record;else a.push(record)}
+async function deleteItem(kind,id,confirmed=false){const map={test:'tests',water:'waterChanges',dose:'doses',fish:'fishEntries',coral:'corals',visual:'tankVisual',goal:'goals'},collection=map[kind];if(!collection)return;const item=data[collection].find(x=>x.id===id);if(!item)return;const label=kind==='coral'?`Delete ${item.name} and all of its notes?`:'Delete this entry?';if(!confirmed&&!confirm(label))return;if(confirmed&&!confirm(label))return;data[collection]=data[collection].filter(x=>x.id!==id);if(kind==='coral'&&coralTab===id)coralTab=data.corals[0]?.id||'';render();toast('Deleted');cloudDelete(collection,id)}
 function wireAutoGrow(root){root.querySelectorAll('textarea').forEach(t=>{const grow=()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,600)+'px'};t.addEventListener('input',grow);grow()})}
-editorDialog.addEventListener('click',e=>{if(e.target===editorDialog)editorDialog.close()});settingsDialog.addEventListener('click',e=>{if(e.target===settingsDialog)settingsDialog.close()});document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(editorDialog.open)editorDialog.close();else if(settingsDialog.open)settingsDialog.close()}});
+editorDialog.addEventListener('click',e=>{if(e.target===editorDialog)editorDialog.close()});settingsDialog.addEventListener('click',e=>{if(e.target===settingsDialog)settingsDialog.close()});editorDialog.addEventListener('close',scheduleRender);settingsDialog.addEventListener('close',scheduleRender);document.addEventListener('keydown',e=>{if(e.key==='Escape'){if(editorDialog.open)editorDialog.close();else if(settingsDialog.open)settingsDialog.close()}});
 
 function toast(msg){clearTimeout(toastTimer);const el=$('#toast');el.textContent=msg;el.classList.add('show');toastTimer=setTimeout(()=>el.classList.remove('show'),2400)}
 
 $('#moreButton').onclick=openSettings;
-function openSettings(){$('#settingsContent').innerHTML=`${closeButton()}<h2>Settings</h2><section class="settings-section"><h3>Tank</h3><p>Volume: ${TANK_GALLONS} gallons</p><p>Tank volume is fixed for this first version.</p></section><section class="settings-section"><h3>Photos</h3><p>Cloudinary + Cloudflare Worker upload support is reserved in the data model. Add the Worker endpoint when we finish the photo flow.</p></section><section class="settings-section"><h3>Backup & restore</h3><p>Encrypted JSON backups use an app-specific CoralDar format.</p><div class="toolbar"><button class="button secondary" id="backupButton">Download backup</button><button class="button secondary" id="restoreButton">Restore backup</button><input id="restoreFile" type="file" accept="application/json,.json" hidden></div></section><section class="settings-section"><h3>Account</h3><p id="syncText">${currentUser?'Connected to Firebase':'Local only'}</p><button class="button secondary" id="signOutButton">Sign out</button><p>CoralDar release ${RELEASE}</p></section>`;settingsDialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>settingsDialog.close());$('#backupButton').onclick=downloadBackup;$('#restoreButton').onclick=()=>$('#restoreFile').click();$('#restoreFile').onchange=restoreBackup;$('#signOutButton').onclick=signOutUser;settingsDialog.showModal()}
+function openSettings(){$('#settingsContent').innerHTML=`${closeButton()}<h2>Settings</h2><section class="settings-section"><h3>Tank</h3><p>Volume: ${TANK_GALLONS} gallons</p><p>Tank volume is fixed for this first version.</p></section><section class="settings-section"><h3>Photos</h3><p>Cloudinary + Cloudflare Worker upload support is reserved in the data model. Add the Worker endpoint when we finish the photo flow.</p></section><section class="settings-section"><h3>Backup & restore</h3><p>Encrypted JSON backups use an app-specific CoralDar format.</p><div class="toolbar"><button class="button secondary" id="backupButton">Download backup</button><button class="button secondary" id="restoreButton">Restore backup</button><input id="restoreFile" type="file" accept="application/json,.json" hidden></div></section><section class="settings-section"><h3>Account</h3><p id="syncText">${syncLabel()}</p><button class="button secondary" id="signOutButton">Sign out</button><p>CoralDar release ${RELEASE}</p></section>`;settingsDialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>settingsDialog.close());$('#backupButton').onclick=downloadBackup;$('#restoreButton').onclick=()=>$('#restoreFile').click();$('#restoreFile').onchange=restoreBackup;$('#signOutButton').onclick=signOutUser;settingsDialog.showModal()}
 function bytesToB64(bytes){let s='';bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function b64ToBytes(s){return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
 async function deriveKey(password,salt){const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:180000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
 async function downloadBackup(){const password=prompt('Choose a password for this CoralDar backup.');if(!password)return;const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12)),key=await deriveKey(password,salt),plain=new TextEncoder().encode(JSON.stringify({data:normalizeData(data),exportedAt:timestamp()})),cipher=await crypto.subtle.encrypt({name:'AES-GCM',iv},key,plain),payload={format:BACKUP_FORMAT,version:1,kdf:'PBKDF2-SHA-256',iterations:180000,salt:bytesToB64(salt),iv:bytesToB64(iv),ciphertext:bytesToB64(new Uint8Array(cipher))},blob=new Blob([JSON.stringify(payload)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`coraldar-backup-${today()}.json`;a.click();URL.revokeObjectURL(url)}
-async function restoreBackup(e){const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const payload=JSON.parse(await file.text());if(payload.format!==BACKUP_FORMAT)throw Error('wrong format');const password=prompt('Enter this backup’s password.');if(!password)return;const key=await deriveKey(password,b64ToBytes(payload.salt)),plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64ToBytes(payload.iv)},key,b64ToBytes(payload.ciphertext)),restored=normalizeData(JSON.parse(new TextDecoder().decode(plain)).data);if(!confirm('Replace the CoralDar data on this device with this backup?'))return;data=restored;saveLocal();render();for(const c of COLLECTIONS)for(const item of data[c])await cloudSet(c,item);toast('Backup restored');settingsDialog.close()}catch(err){console.error(err);alert('That backup could not be restored. Check the file and password.')}}
+async function restoreBackup(e){const file=e.target.files?.[0];e.target.value='';if(!file)return;try{const payload=JSON.parse(await file.text());if(payload.format!==BACKUP_FORMAT)throw Error('wrong format');const password=prompt('Enter this backup’s password.');if(!password)return;const key=await deriveKey(password,b64ToBytes(payload.salt)),plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64ToBytes(payload.iv)},key,b64ToBytes(payload.ciphertext)),restored=normalizeData(JSON.parse(new TextDecoder().decode(plain)).data);if(!confirm('Replace all CoralDar data with this backup? Entries that are not in the backup will be deleted on every device.'))return;const ops=[];for(const c of COLLECTIONS){const keep=new Set(restored[c].map(x=>x.id));for(const item of data[c])if(!keep.has(item.id))ops.push(['delete',c,item.id]);for(const item of restored[c])ops.push(['set',c,item])}data=restored;render();settingsDialog.close();toast('Backup restored');commitOps(ops).catch(syncError)}catch(err){console.error(err);alert('That backup could not be restored. Check the file and password.')}}
 
 function firebasePath(collection){return ['coraldarUsers',OWNER_UID,collection]}
-async function cloudSet(collection,record){if(!firebase||!currentUser||currentUser.uid!==OWNER_UID)return;try{await firebase.setDoc(firebase.doc(firebase.db,...firebasePath(collection),record.id),record)}catch(err){console.error(err);toast('Saved locally; sync failed')}}
-async function cloudDelete(collection,id){if(!firebase||!currentUser||currentUser.uid!==OWNER_UID)return;try{await firebase.deleteDoc(firebase.doc(firebase.db,...firebasePath(collection),id))}catch(err){console.error(err);toast('Deleted locally; sync failed')}}
-function startSnapshots(){unsubscribers.forEach(fn=>fn());unsubscribers=[];for(const collection of COLLECTIONS){const unsub=firebase.onSnapshot(firebase.collection(firebase.db,...firebasePath(collection)),snap=>{const remote=snap.docs.map(d=>({id:d.id,...d.data()})),next=normalizeData({...data,[collection]:remote})[collection],merged=new Map(data[collection].map(item=>[item.id,item]));next.forEach(item=>merged.set(item.id,item));data[collection]=[...merged.values()];saveLocal();if(!editorDialog.open&&!settingsDialog.open)render()},err=>console.error('snapshot',collection,err));unsubscribers.push(unsub)}}
+const canSync = () => !!(firebase&&currentUser&&currentUser.uid===OWNER_UID);
+function syncError(err){console.error(err);toast(err?.code==='permission-denied'?'Sync was rejected by the server':'Sync failed; change kept on this device')}
+// Firestore's persistent cache queues writes offline and applies them to snapshots immediately, so writes are fire-and-forget.
+function cloudSet(collection,record){if(canSync())firebase.setDoc(firebase.doc(firebase.db,...firebasePath(collection),record.id),record).catch(syncError)}
+function cloudDelete(collection,id){if(canSync())firebase.deleteDoc(firebase.doc(firebase.db,...firebasePath(collection),id)).catch(syncError)}
+async function commitOps(ops){if(!canSync())return;const commits=[];for(let i=0;i<ops.length;i+=200){const batch=firebase.writeBatch(firebase.db);for(const [op,c,v] of ops.slice(i,i+200)){const ref=firebase.doc(firebase.db,...firebasePath(c),op==='set'?v.id:v);op==='set'?batch.set(ref,v):batch.delete(ref)}commits.push(batch.commit())}await Promise.all(commits)}
+function syncLabel(){return !currentUser?'Not signed in':Object.values(pendingSync).some(Boolean)?'Changes waiting to sync — they will upload when you are back online.':'All changes synced'}
+function scheduleRender(){if(renderQueued)return;renderQueued=true;requestAnimationFrame(()=>{renderQueued=false;const sync=$('#syncText');if(sync)sync.textContent=syncLabel();if(currentUser&&!editorDialog.open&&!settingsDialog.open)render()})}
+function stopSnapshots(){unsubscribers.forEach(fn=>fn());unsubscribers=[]}
+function startSnapshots(){stopSnapshots();const awaitingServer=new Set(COLLECTIONS);for(const collection of COLLECTIONS){const unsub=firebase.onSnapshot(firebase.collection(firebase.db,...firebasePath(collection)),{includeMetadataChanges:true},snap=>{data[collection]=normalizeData({[collection]:snap.docs.map(d=>({...d.data(),id:d.id}))})[collection];pendingSync[collection]=snap.metadata.hasPendingWrites;if(!snap.metadata.fromCache&&awaitingServer.delete(collection)&&!awaitingServer.size)migrateLegacyLocal();scheduleRender()},err=>console.error('snapshot',collection,err));unsubscribers.push(unsub)}}
+// One-time upload of entries that only exist in the old localStorage mirror (e.g. writes that never reached the server).
+function migrateLegacyLocal(){const legacy=readLegacyLocal();if(!legacy)return;const ops=[];for(const c of COLLECTIONS){const have=new Set(data[c].map(x=>x.id));for(const item of legacy[c])if(!have.has(item.id))ops.push(['set',c,item])}if(!ops.length){localStorage.removeItem(STORAGE_KEY);return}toast(`Uploading ${ops.length} unsynced ${ops.length===1?'entry':'entries'}`);commitOps(ops).then(()=>localStorage.removeItem(STORAGE_KEY)).catch(syncError)}
+// Remove the offline cache (private data) after sign-out; the instance must be terminated first, so reload for a fresh one.
+async function wipeCacheAndReload(){try{await firebase.terminate(firebase.db)}catch{}try{await firebase.clearIndexedDbPersistence(firebase.db)}catch(err){console.warn('Could not clear offline cache',err)}location.reload()}
 async function initFirebase(){
   try{
     const [appMod,authMod,firestoreMod]=await Promise.all([
@@ -146,24 +156,31 @@ async function initFirebase(){
     ]);
     const app=appMod.initializeApp(FIREBASE_CONFIG);
     const auth=authMod.initializeAuth(app,{persistence:authMod.browserLocalPersistence,popupRedirectResolver:authMod.browserPopupRedirectResolver});
+    let db;
+    try{db=firestoreMod.initializeFirestore(app,{localCache:firestoreMod.persistentLocalCache({tabManager:firestoreMod.persistentMultipleTabManager()})})}catch(err){console.warn('Offline cache unavailable',err);db=firestoreMod.getFirestore(app)}
     firebase={
       auth,
-      db:firestoreMod.getFirestore(app),
+      db,
       doc:firestoreMod.doc,
       collection:firestoreMod.collection,
       onSnapshot:firestoreMod.onSnapshot,
       setDoc:firestoreMod.setDoc,
       deleteDoc:firestoreMod.deleteDoc,
+      writeBatch:firestoreMod.writeBatch,
+      terminate:firestoreMod.terminate,
+      clearIndexedDbPersistence:firestoreMod.clearIndexedDbPersistence,
       GoogleAuthProvider:authMod.GoogleAuthProvider,
       onAuthStateChanged:authMod.onAuthStateChanged,
       signInWithPopup:authMod.signInWithPopup,
       signOut:authMod.signOut
     };
-    firebase.onAuthStateChanged(firebase.auth,user=>{
-      if(!user){currentUser=null;unsubscribers.forEach(fn=>fn());unsubscribers=[];clearPrivateLocal();$('#app').hidden=true;$('#authGate').hidden=false;if(!$('#authStatus').textContent.includes('UID:'))$('#authStatus').textContent='Sign in with the owner account to continue.';return}
-      if(!OWNER_UID){currentUser=null;unsubscribers.forEach(fn=>fn());unsubscribers=[];clearPrivateLocal();$('#app').hidden=true;$('#authGate').hidden=false;$('#authStatus').textContent=`Firebase sign-in succeeded. Your CoralDar owner UID is: ${user.uid} — send this UID to me so I can lock the app to your account.`;firebase.signOut(firebase.auth);return}
+    firebase.onAuthStateChanged(firebase.auth,async user=>{
+      if(!user){const wasSignedIn=!!currentUser;currentUser=null;stopSnapshots();clearPrivateLocal();if(wasSignedIn){$('#app').hidden=true;$('#authGate').hidden=false;$('#authStatus').textContent='Signing out…';return wipeCacheAndReload()}
+        // Signed out at startup: clear any cache left behind (e.g. another tab held it open during sign-out). Allowed only before Firestore starts.
+        cacheReady=firebase.clearIndexedDbPersistence(firebase.db).catch(err=>console.warn('Could not clear offline cache',err));$('#app').hidden=true;$('#authGate').hidden=false;if(!$('#authStatus').textContent.includes('UID:'))$('#authStatus').textContent='Sign in with the owner account to continue.';return}
+      if(!OWNER_UID){currentUser=null;stopSnapshots();clearPrivateLocal();$('#app').hidden=true;$('#authGate').hidden=false;$('#authStatus').textContent=`Firebase sign-in succeeded. Your CoralDar owner UID is: ${user.uid} — send this UID to me so I can lock the app to your account.`;firebase.signOut(firebase.auth);return}
       if(user.uid!==OWNER_UID){firebase.signOut(firebase.auth);$('#authStatus').textContent=`This Google account is not authorized for CoralDar. Signed-in UID: ${user.uid}`;return}
-      currentUser=user;data=loadData();$('#authGate').hidden=true;$('#app').hidden=false;render();startSnapshots();
+      await cacheReady;currentUser=user;data=emptyData();$('#authGate').hidden=true;$('#app').hidden=false;render();startSnapshots();
     });
   }catch(err){console.error(err);$('#authStatus').textContent=`Could not initialize Firebase${err?.code?` (${err.code})`:''}. ${err?.message||'Check your connection.'}`}
 }
@@ -173,10 +190,10 @@ $('#signInButton').onclick=async()=>{if(!firebase)return;const button=$('#signIn
   'auth/popup-closed-by-user':'The Google sign-in window was closed before sign-in finished.',
   'auth/operation-not-allowed':'Google sign-in is not enabled for this Firebase project.'
 };$('#authStatus').textContent=messages[code]||`Sign-in did not finish (${code}). ${err?.message||''}`.trim()}finally{button.disabled=false}};
-async function signOutUser(){if(firebase)await firebase.signOut(firebase.auth);clearPrivateLocal();settingsDialog.close()}
+async function signOutUser(){settingsDialog.close();if(firebase)await firebase.signOut(firebase.auth);else clearPrivateLocal()}
 
 function waitFirebase(){initFirebase()}
-if('serviceWorker' in navigator)navigator.serviceWorker.getRegistrations().then(regs=>Promise.all(regs.map(r=>r.unregister()))).catch(()=>{});
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(err=>console.warn('Service worker registration failed',err));
 waitFirebase();render();
 
 (async()=>{try{const local=Number(document.querySelector('meta[name="coraldar-release"]')?.content||0),u=new URL(location.pathname,location.origin);u.searchParams.set('_coraldar_release',Date.now());const response=await fetch(u,{cache:'no-store',credentials:'same-origin'});if(!response.ok)return;const html=await response.text(),match=html.match(/<meta\s+name=["']coraldar-release["']\s+content=["'](\d+)["']/i),remote=Number(match?.[1]||0);if(remote>local){const target=new URL(location.href);target.searchParams.set('v',remote);location.replace(target.href)}}catch{}})();

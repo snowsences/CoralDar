@@ -1,0 +1,67 @@
+'use strict';
+
+// App-shell cache only. Private reef data lives in Firestore's IndexedDB cache, never here.
+const SHELL_CACHE = 'coraldar-shell-v5';
+const FONT_CACHE = 'coraldar-fonts-v1';
+const SHELL = ['./','index.html','styles.css','app.js','firebase-init.js','manifest.webmanifest','app-icon.png','app-icon-maskable.png',
+  'vendor/firebase/12.18.0/firebase-app.js','vendor/firebase/12.18.0/firebase-auth.js','vendor/firebase/12.18.0/firebase-firestore.js'];
+const NETWORK_TIMEOUT = 4000;
+
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(SHELL_CACHE).then(c => c.addAll(SHELL.map(u => new Request(u, {cache:'reload'})))).then(() => self.skipWaiting()));
+});
+
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => k.startsWith('coraldar-') && k !== SHELL_CACHE && k !== FONT_CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
+});
+
+self.addEventListener('fetch', e => {
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
+  if (url.origin === location.origin) {
+    if (url.searchParams.has('_coraldar_release')) return; // release check must reach the network
+    // Cache keys drop the ?v= query so asset version bumps replace entries instead of piling up.
+    const key = url.origin + url.pathname;
+    if (url.pathname.includes('/vendor/')) return e.respondWith(cacheFirst(req, key));
+    return e.respondWith(networkFirst(req, key));
+  }
+  if (url.hostname === 'fonts.googleapis.com' || url.hostname === 'fonts.gstatic.com') e.respondWith(staleWhileRevalidate(req));
+});
+
+async function cacheFirst(req, key) {
+  const cache = await caches.open(SHELL_CACHE);
+  const hit = await cache.match(key);
+  if (hit) return hit;
+  const res = await fetch(req);
+  if (res.ok) cache.put(key, res.clone());
+  return res;
+}
+
+async function networkFirst(req, key) {
+  const cache = await caches.open(SHELL_CACHE);
+  const cached = () => cache.match(key).then(hit => hit || (req.mode === 'navigate' ? cache.match(new URL('./', self.registration.scope).href) : undefined));
+  const network = fetch(req).then(res => {
+    if (res.ok && res.type === 'basic') cache.put(key, res.clone());
+    return res;
+  });
+  // On a slow connection fall back to the cached copy after a few seconds; with no cached copy, keep waiting.
+  const timeout = new Promise(resolve => setTimeout(() => cached().then(hit => hit && resolve(hit)), NETWORK_TIMEOUT));
+  try {
+    return await Promise.race([network, timeout]);
+  } catch (err) {
+    const hit = await cached();
+    if (hit) return hit;
+    throw err;
+  }
+}
+
+async function staleWhileRevalidate(req) {
+  const cache = await caches.open(FONT_CACHE);
+  const hit = await cache.match(req);
+  const network = fetch(req).then(res => { if (res.ok || res.type === 'opaque') cache.put(req, res.clone()); return res; });
+  if (hit) { network.catch(() => {}); return hit; }
+  return network;
+}
