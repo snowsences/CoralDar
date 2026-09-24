@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0c2022">
   <meta name="application-name" content="CoralDar">
   <meta name="apple-mobile-web-app-title" content="CoralDar">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://res.cloudinary.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com; frame-src https://accounts.google.com https://*.firebaseapp.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://apis.google.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://res.cloudinary.com; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://firestore.googleapis.com https://api.cloudinary.com; frame-src https://accounts.google.com https://*.firebaseapp.com; object-src 'none'; base-uri 'self'; form-action 'self'">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="app-icon.png" type="image/png">
   <link rel="apple-touch-icon" href="app-icon.png">
@@ -42,6 +42,7 @@
 
   <dialog id="editorDialog" class="dialog"><form id="editorForm" class="dialog-inner"></form></dialog>
   <dialog id="settingsDialog" class="dialog"><div class="dialog-inner" id="settingsContent"></div></dialog>
+  <dialog id="photoDialog" class="dialog photo-dialog"><div class="dialog-inner" id="photoContent"></div></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <script src="app.js" defer></script>
