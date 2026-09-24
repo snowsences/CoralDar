@@ -1,6 +1,6 @@
 'use strict';
 
-const RELEASE = 11;
+const RELEASE = 12;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
@@ -35,11 +35,13 @@ const KIND_COLLECTION = {test:'tests',water:'waterChanges',dose:'doses',fish:'fi
 
 const $ = s => document.querySelector(s);
 const main = $('#main'), nav = $('#mainNav'), primaryAction = $('#primaryAction'), editorDialog = $('#editorDialog'), editorForm = $('#editorForm'), settingsDialog = $('#settingsDialog'), photoDialog = $('#photoDialog');
-const narrowQuery = matchMedia('(max-width:680px)');
+const narrowQuery = matchMedia('(max-width:680px)'), reducedMotion = matchMedia('(prefers-reduced-motion: reduce)'), coarsePointer = matchMedia('(pointer: coarse)');
+// iOS gives home-screen apps no swipe-back of their own; in a Safari tab the edge swipe belongs to the browser.
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 let data = emptyData();
 let activeTab = 'home';
 let testType = 'temperature', testRange = '3m', fishTab = '', coralTab = '', fishDetailOpen = false, coralDetailOpen = false;
-let firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, editorSnapshot = '', authNotice = '', cacheReady = Promise.resolve(), pendingSync = {}, legacyCoralNotes = [], pendingFile = null;
+let firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, editorSnapshot = '', authNotice = '', cacheReady = Promise.resolve(), pendingSync = {}, legacyCoralNotes = [], pendingFiles = [], nextAnim = '';
 
 function emptyData(){ return {tests:[],waterChanges:[],doses:[],fish:[],fishEntries:[],corals:[],coralNotes:[],tankVisual:[],goals:[],photos:[],atoRefills:[],meta:[]}; }
 function readLegacyLocal(){ try{const raw=localStorage.getItem(STORAGE_KEY);return raw?normalizeData(JSON.parse(raw)):null}catch{return null} }
@@ -115,7 +117,7 @@ const photoErrors = {'not-configured':'Photo uploads aren’t set up yet.','offl
 function icon(path){return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`}
 function renderNav(){nav.innerHTML=NAV.map(([id,label,path,aria])=>`<button class="nav-tab ${id===activeTab?'active':''}" data-tab="${id}" ${id===activeTab?'aria-current="page"':''} ${aria?`aria-label="${esc(aria)}"`:''}>${icon(path)}<span>${esc(label)}</span></button>`).join('');nav.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;
   // Tapping Fish or Coral always lands on the full list, even from a fish or coral's detail view.
-  if(activeTab==='fish')fishDetailOpen=false;if(activeTab==='coral')coralDetailOpen=false;render();scrollTo(0,0)})}
+  if(activeTab==='fish')fishDetailOpen=false;if(activeTab==='coral')coralDetailOpen=false;nextAnim='fade';render();scrollTo(0,0)})}
 const selectedFish = () => data.fish.find(f=>f.id===fishTab);
 const selectedCoral = () => data.corals.find(c=>c.id===coralTab);
 const fishDetailShown = () => !!selectedFish()&&(!narrowQuery.matches||fishDetailOpen);
@@ -123,7 +125,9 @@ const coralDetailShown = () => !!selectedCoral()&&(!narrowQuery.matches||coralDe
 function primaryLabel(){return {fish:fishDetailShown()?'Add Entry':'Add Fish',coral:coralDetailShown()?'Add Note':'Add Coral',visual:'Add Entry',goals:'Add Goal'}[activeTab]||'Log Data'}
 function render(){renderNav();primaryAction.textContent=primaryLabel();
   ({home:renderHome,testing:renderTesting,water:renderWater,dosing:renderDosing,fish:renderFish,coral:renderCoral,visual:renderVisual,goals:renderGoals}[activeTab]||renderHome)();
-  wirePhotos();
+  wirePhotos();openSwipeRow=null;
+  // One-shot transition requested by a user action (never by background sync re-renders).
+  const anim=nextAnim;nextAnim='';if(anim&&!reducedMotion.matches)main.firstElementChild?.classList.add(`anim-${anim}`);
 }
 primaryAction.onclick=()=>{
   if(activeTab==='fish')return fishDetailShown()?openEditor('fishEntry',null,{fish:fishTab}):openEditor('fish');
@@ -192,12 +196,12 @@ function entityList(items,{owner,fallbackIcon,selected,dataAttr,meta,addLabel,ad
 function detailBack(label,attr){return narrowQuery.matches?`<button type="button" class="back-link" ${attr}>${icon(ICONS.back)}<span>${esc(label)}</span></button>`:''}
 function renderFish(){const fish=sortedFish();if(!selectedFish())fishTab=fish[0]?.id||'';const sel=selectedFish(),showDetail=fishDetailShown(),showList=!narrowQuery.matches||!showDetail;
   main.innerHTML=`<section class="screen stack">${screenHead('Fish','Feeding and behavior notes by animal.')}<div class="master-detail">${showList?entityList(fish,{owner:'fish',fallbackIcon:ICONS.fish,selected:fishTab,dataAttr:'data-fish',meta:f=>{const n=data.fishEntries.filter(e=>e.fish===f.id).length;return `${n} ${n===1?'entry':'entries'}`},addLabel:'Add fish',addAttr:'data-add-fish'}):''}${showDetail?fishDetail(sel):(!narrowQuery.matches?empty('No fish yet','Add a fish to start its feeding and behavior notes.'):'')}</div></section>`;
-  main.querySelectorAll('[data-fish]').forEach(b=>b.onclick=()=>{fishTab=b.dataset.fish;fishDetailOpen=true;render()});main.querySelector('[data-add-fish]')?.addEventListener('click',()=>openEditor('fish'));main.querySelector('[data-back-fish]')?.addEventListener('click',()=>{fishDetailOpen=false;render()});wireRows()}
+  main.querySelectorAll('[data-fish]').forEach(b=>b.onclick=()=>{fishTab=b.dataset.fish;fishDetailOpen=true;nextAnim=narrowQuery.matches?'detail-in':'';render();scrollTo(0,0)});main.querySelector('[data-add-fish]')?.addEventListener('click',()=>openEditor('fish'));main.querySelector('[data-back-fish]')?.addEventListener('click',()=>slideBack());wireRows()}
 function fishDetail(f){const rows=data.fishEntries.filter(e=>e.fish===f.id).sort(byNewest);return `<section class="panel detail">${detailBack('All fish','data-back-fish')}<div class="detail-head"><h2>${esc(f.name)}</h2>${rowActions('fish',f.id)}</div><h3 class="detail-label">Photos</h3>${photoStrip('fish',f.id)}<div class="detail-label-row"><h3 class="detail-label">Entries</h3><button type="button" class="button secondary" data-add-entry>Add Entry</button></div><div class="list">${rows.length?rows.map(r=>`<article class="row"><div class="row-copy"><strong>${r.kind==='feeding'?'Feeding':'Behavior'} · ${esc(fmtWhen(r.date,r.time))}</strong><span>${esc(r.text)}</span></div>${rowActions('fishEntry',r.id)}</article>`).join(''):`<div class="muted">No entries yet.</div>`}</div></section>`}
 main.addEventListener('click',e=>{if(e.target.closest('[data-add-entry]'))openEditor('fishEntry',null,{fish:fishTab});if(e.target.closest('[data-add-note]'))openEditor('coralNote',null,{coralId:coralTab})});
 function renderCoral(){const corals=sortedCorals();if(!selectedCoral())coralTab=corals[0]?.id||'';const sel=selectedCoral(),showDetail=coralDetailShown(),showList=!narrowQuery.matches||!showDetail;
   main.innerHTML=`<section class="screen stack">${screenHead('Coral','Your corals and their notes.')}<div class="master-detail">${showList?entityList(corals,{owner:'coral',fallbackIcon:ICONS.coral,selected:coralTab,dataAttr:'data-coral',meta:c=>c.genus||(c.acquisitionDate?`Acquired ${fmtDate(c.acquisitionDate)}`:''),addLabel:'Add coral',addAttr:'data-add-coral'}):''}${showDetail?coralDetail(sel):(!narrowQuery.matches?empty('No coral yet','Add a coral to track its details, photos, and dated notes.'):'')}</div></section>`;
-  main.querySelectorAll('[data-coral]').forEach(b=>b.onclick=()=>{coralTab=b.dataset.coral;coralDetailOpen=true;render()});main.querySelector('[data-add-coral]')?.addEventListener('click',()=>openEditor('coral'));main.querySelector('[data-back-coral]')?.addEventListener('click',()=>{coralDetailOpen=false;render()});wireRows()}
+  main.querySelectorAll('[data-coral]').forEach(b=>b.onclick=()=>{coralTab=b.dataset.coral;coralDetailOpen=true;nextAnim=narrowQuery.matches?'detail-in':'';render();scrollTo(0,0)});main.querySelector('[data-add-coral]')?.addEventListener('click',()=>openEditor('coral'));main.querySelector('[data-back-coral]')?.addEventListener('click',()=>slideBack());wireRows()}
 function notesFor(coralId){const ids=new Set(data.coralNotes.map(n=>n.id));return data.coralNotes.filter(n=>n.coralId===coralId).concat(legacyCoralNotes.filter(n=>n.coralId===coralId&&!ids.has(n.id)))}
 function coralDetail(c){const notes=notesFor(c.id).sort(byNewest);return `<section class="panel detail">${detailBack('All coral','data-back-coral')}<div class="detail-head"><div><h2>${esc(c.name)}</h2><p class="muted">${esc(c.genus||'Genus not set')}${c.acquisitionDate?` · Acquired ${esc(fmtDate(c.acquisitionDate))}`:''}</p></div>${rowActions('coral',c.id)}</div><h3 class="detail-label">Photos</h3>${photoStrip('coral',c.id)}<div class="detail-label-row"><h3 class="detail-label">Notes</h3><button type="button" class="button secondary" data-add-note>Add Note</button></div><div class="notes-list">${notes.length?notes.map(n=>`<article class="note-card"><div class="note-head"><time>${esc(fmtDate(n.date))}</time>${rowActions('coralNote',n.id)}</div><p>${esc(n.text)}</p></article>`).join(''):`<div class="muted">No notes yet.</div>`}</div></section>`}
 
@@ -207,14 +211,18 @@ function renderGoals(){const rows=[...data.goals].sort((a,b)=>(a.targetDate||'99
 
 // ---- Photo viewer ----
 function openPhotoViewer(id){const p=data.photos.find(x=>x.id===id);if(!p)return;
-  $('#photoContent').innerHTML=`${closeButton()}<figure class="photo-view"><img src="${esc(fullSrc(p))}" alt="${esc(p.caption||`Photo from ${fmtDate(p.takenDate)}`)}" crossorigin="anonymous"><figcaption><strong>${esc(fmtDate(p.takenDate))}</strong><span class="muted">${esc(photoOwnerLabel(p))}</span>${p.caption?`<span>${esc(p.caption)}</span>`:''}</figcaption></figure><div class="dialog-actions"><button type="button" class="button danger" data-photo-delete>Delete</button><button type="button" class="button secondary" data-photo-edit>Edit</button></div>`;
-  photoDialog.querySelector('[data-close]').onclick=()=>photoDialog.close();photoDialog.querySelector('[data-photo-edit]').onclick=()=>{photoDialog.close();openEditor('photo',p)};photoDialog.querySelector('[data-photo-delete]').onclick=()=>{photoDialog.close();deleteItem('photo',p.id)};photoDialog.showModal()}
+  $('#photoContent').innerHTML=`${closeButton()}<figure class="photo-view"><img src="${esc(fullSrc(p))}" alt="${esc(p.caption||`Photo from ${fmtDate(p.takenDate)}`)}" crossorigin="anonymous"><figcaption><strong>${esc(fmtDate(p.takenDate))}</strong><span class="muted">${esc(photoOwnerLabel(p))}</span>${p.caption?`<span>${esc(p.caption)}</span>`:''}</figcaption></figure><div class="dialog-actions"><button type="button" class="button danger" data-photo-delete>Delete</button>${canShareFiles()?`<button type="button" class="button secondary" data-photo-share>Share</button>`:''}<button type="button" class="button secondary" data-photo-edit>Edit</button></div>`;
+  photoDialog.querySelector('[data-close]').onclick=()=>dismiss(photoDialog);photoDialog.querySelector('[data-photo-edit]').onclick=()=>{photoDialog.close();openEditor('photo',p)};photoDialog.querySelector('[data-photo-delete]').onclick=()=>{dismiss(photoDialog);deleteItem('photo',p.id)};
+  // Fetch the shareable JPEG up front: iOS only opens the share sheet straight from a tap, so it can't wait on a download.
+  const share=photoDialog.querySelector('[data-photo-share]');if(share){const file=fetch(photoSize(p.url,'q_auto,f_jpg')).then(r=>r.ok?r.blob():Promise.reject()).then(b=>new File([b],`coraldar-${p.takenDate}.jpg`,{type:'image/jpeg'})).catch(()=>null);let ready=null;file.then(f=>ready=f);
+    share.onclick=async()=>{const f=ready||await file;if(!f)return toast('That photo couldn’t be shared. Long-press it to save instead.');try{await navigator.share({files:[f]})}catch(err){if(err.name!=='AbortError')toast('That photo couldn’t be shared. Long-press it to save instead.')}}}
+  photoDialog.showModal()}
 
 // ---- Editor ----
 function closeButton(){return `<button type="button" class="icon-button dialog-close" data-close aria-label="Close">${icon(ICONS.close)}</button>`}
 function field(label,input,full=''){return `<label class="field ${full}"><span>${esc(label)}</span>${input}</label>`}
 const dateInput = (name,value,required=true) => `<input name="${name}" type="date" ${required?'required':''} value="${esc(value||'')}">`;
-function photoFields(dateValue,required){return field(required?'Photo':'Photo (optional)',`<input name="photo" type="file" accept="image/*" ${required?'required':''} data-photo-input>`,'full')+`<div class="field full photo-preview" hidden><img alt="Selected photo preview"></div>`+field('Date taken',dateInput('takenDate',dateValue,required))}
+function photoFields(dateValue,required){return field(required?'Photos':'Photos (optional)',`<input name="photo" type="file" accept="image/*" multiple ${required?'required':''} data-photo-input>`,'full')+`<div class="field full photo-preview" hidden></div>`+field('Date taken',dateInput('takenDate',dateValue,required))}
 function openEditor(kind,item=null,ctx={}){const editing=!!item,id=item?.id||uid();let title='',fields='';
   if(kind==='test'){const type=item?.type||testType;title=editing?'Edit reading':'Log reading';fields=field('Parameter',`<select name="type">${TEST_TYPES.map(([k,l])=>`<option value="${k}" ${k===type?'selected':''}>${esc(l)}</option>`).join('')}</select>`)+field('Measurement',`<input name="value" type="number" step="any" inputmode="decimal" required value="${editing?item.value:''}">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(editing?item.time:nowTime())}">`)}
   if(kind==='water'){title=editing?'Edit water change':'Log water change';fields=field('Gallons changed',`<input name="gallons" type="number" min="0.1" max="96" step="0.1" inputmode="decimal" required value="${esc(item?.gallons||'')}">`)+field('Date',dateInput('date',item?.date||today()))+field('Notes',`<textarea name="notes" maxlength="1000" placeholder="Optional">${esc(item?.notes||'')}</textarea>`,'full')}
@@ -226,15 +234,19 @@ function openEditor(kind,item=null,ctx={}){const editing=!!item,id=item?.id||uid
   if(kind==='visual'){title=editing?'Edit visual entry':'Add visual entry';fields=field('Date',dateInput('date',item?.date||today()))+field('Notes',`<textarea name="notes" maxlength="2000">${esc(item?.notes||'')}</textarea>`,'full')+(editing?'':photoFields(today(),false))}
   if(kind==='goal'){title=editing?'Edit goal':'Add goal';fields=field('Goal',`<input name="title" maxlength="200" required value="${esc(item?.title||'')}">`)+field('Target date',dateInput('targetDate',item?.targetDate,false))+field('Notes',`<textarea name="notes" maxlength="3000">${esc(item?.notes||'')}</textarea>`,'full')}
   if(kind==='photo'){title=editing?'Edit photo':`Add photo · ${photoOwnerLabel({owner:ctx.owner,ownerId:ctx.ownerId})}`;ctx=editing?{owner:item.owner,ownerId:item.ownerId}:ctx;fields=editing?`<div class="field full photo-preview"><img src="${esc(thumbSrc(item))}" alt="" crossorigin="anonymous"></div>`+field('Date taken',dateInput('takenDate',item.takenDate))+field('Caption',`<input name="caption" maxlength="200" value="${esc(item.caption)}" placeholder="Optional">`,'full'):photoFields(today(),true)+field('Caption',`<input name="caption" maxlength="200" placeholder="Optional">`,'full')}
-  editorForm.dataset.kind=kind;editorForm.dataset.id=id;editorForm.dataset.ctx=JSON.stringify(ctx);pendingFile=null;
+  editorForm.dataset.kind=kind;editorForm.dataset.id=id;editorForm.dataset.ctx=JSON.stringify(ctx);pendingFiles=[];editorForm._uploaded=[];
   editorForm.innerHTML=`${closeButton()}<h2>${esc(title)}</h2><div class="dialog-grid">${fields}</div><p class="dialog-hint" role="status"></p><div class="dialog-actions"><button type="button" class="button secondary" data-close>Cancel</button><button class="button primary" type="submit">Save</button></div>`;
-  wireAutoGrow(editorForm);wirePhotoInput(editorForm);editorForm.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>editorDialog.close());editorSnapshot=formState();editorDialog.showModal();setTimeout(()=>editorForm.querySelector('input:not([type=file]),select,textarea')?.focus(),0)}
-// Picking a photo shows a preview and fills "Date taken" from the file's date, unless the date was already edited.
-function wirePhotoInput(root){const input=root.querySelector('[data-photo-input]');if(!input)return;const date=root.querySelector('[name=takenDate]'),preview=root.querySelector('.photo-preview');let touched=false;date.addEventListener('input',()=>touched=true);
-  input.addEventListener('change',()=>{const file=input.files?.[0];pendingFile=file||null;const img=preview.querySelector('img');if(img.src)URL.revokeObjectURL(img.src);if(!file){preview.hidden=true;img.removeAttribute('src');return}img.src=URL.createObjectURL(file);preview.hidden=false;const fileDate=new Date(file.lastModified).toLocaleDateString('en-CA');if(!touched&&fileDate<=today())date.value=fileDate;date.required=true})}
+  wireAutoGrow(editorForm);wirePhotoInput(editorForm);tuneKeyboard(editorForm);editorForm.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dismiss(editorDialog));editorSnapshot=formState();editorDialog.showModal();setTimeout(()=>editorForm.querySelector('input:not([type=file]),select,textarea')?.focus(),0)}
+// Picking photos shows previews and fills "Date taken" from the first file's date, unless the date was already edited.
+const fileDate = f => new Date(f.lastModified).toLocaleDateString('en-CA');
+function wirePhotoInput(root){const input=root.querySelector('[data-photo-input]');if(!input)return;const date=root.querySelector('[name=takenDate]'),preview=root.querySelector('.photo-preview');date.addEventListener('input',()=>date.dataset.touched='1');
+  input.addEventListener('change',()=>{const files=[...(input.files||[])].slice(0,20);pendingFiles=files;root._uploaded=[];preview.querySelectorAll('img').forEach(i=>URL.revokeObjectURL(i.src));preview.innerHTML=files.map(()=>'<img alt="">').join('');preview.querySelectorAll('img').forEach((img,i)=>img.src=URL.createObjectURL(files[i]));preview.hidden=!files.length;preview.classList.toggle('photo-preview-grid',files.length>1);
+    if(files.length){if(!date.dataset.touched&&fileDate(files[0])<=today())date.value=fileDate(files[0]);date.required=true}})}
+// Return-key labels and capitalization that match each field on phone keyboards.
+function tuneKeyboard(root){root.querySelectorAll('input[type=text],input:not([type]),input[type=number]').forEach(i=>i.enterKeyHint='done');root.querySelectorAll('[name=name],[name=genus],[name=additive]').forEach(i=>i.autocapitalize='words');root.querySelectorAll('textarea,[name=title],[name=caption]').forEach(i=>i.autocapitalize='sentences')}
 const formState = () => JSON.stringify([...new FormData(editorForm)].map(([k,v])=>[k,v instanceof File?v.name:v]));
 // Unsaved edits survive an outside tap or Escape; Cancel and × still discard on purpose.
-function guardEditorClose(){if(formState()===editorSnapshot)return true;editorForm.querySelector('.dialog-hint').textContent='You have unsaved changes. Save them, or tap Cancel to discard.';return false}
+function guardEditorClose(){if(formState()===editorSnapshot&&!pendingFiles.length)return true;editorForm.querySelector('.dialog-hint').textContent='You have unsaved changes. Save them, or tap Cancel to discard.';return false}
 
 editorForm.onsubmit=async e=>{e.preventDefault();const fd=new FormData(editorForm),kind=editorForm.dataset.kind,id=editorForm.dataset.id,ctx=JSON.parse(editorForm.dataset.ctx||'{}'),now=timestamp(),old=findKind(kind,id),collection=KIND_COLLECTION[kind];let record=null;
   if(kind==='test')record={id,type:String(fd.get('type')),value:finite(fd.get('value')),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),createdAt:old?.createdAt||now};
@@ -246,15 +258,20 @@ editorForm.onsubmit=async e=>{e.preventDefault();const fd=new FormData(editorFor
   if(kind==='coralNote'){if(!ctx.coralId)return;record={id,coralId:ctx.coralId,date:safeDate(fd.get('date'))||today(),text:safeText(fd.get('text'),4000),createdAt:old?.createdAt||now}}
   if(kind==='visual')record={id,date:safeDate(fd.get('date'))||today(),notes:safeText(fd.get('notes'),2000),photos:old?.photos||[],createdAt:old?.createdAt||now};
   if(kind==='goal')record={id,title:safeText(fd.get('title'),200),targetDate:safeDate(fd.get('targetDate')),notes:safeText(fd.get('notes'),3000),photos:old?.photos||[],createdAt:old?.createdAt||now};
-  if(kind==='photo'){if(old)record={...old,takenDate:safeDate(fd.get('takenDate'))||old.takenDate,caption:safeText(fd.get('caption'),200)};else if(!pendingFile)return}
-  const file=pendingFile,photoDate=safeDate(fd.get('takenDate'))||today(),caption=safeText(fd.get('caption'),200);
-  // New photos upload first (the dialog stays open meanwhile), so a failed upload never leaves a half-saved entry.
-  let uploaded=null;if(file){const submit=editorForm.querySelector('[type=submit]'),hint=editorForm.querySelector('.dialog-hint');submit.disabled=true;hint.textContent='Uploading photo…';try{uploaded=await uploadPhoto(file)}catch(err){console.error(err);hint.textContent=photoErrors[err.message]||photoErrors['upload-failed'];submit.disabled=false;return}}
+  if(kind==='photo'){if(old)record={...old,takenDate:safeDate(fd.get('takenDate'))||old.takenDate,caption:safeText(fd.get('caption'),200)};else if(!pendingFiles.length)return}
+  const files=pendingFiles,dateField=editorForm.querySelector('[name=takenDate]'),fieldDate=safeDate(fd.get('takenDate'))||today(),caption=safeText(fd.get('caption'),200);
+  // Each photo keeps its own file date unless "Date taken" was set by hand, which then applies to all of them.
+  const photoDate=f=>dateField?.dataset.touched||fileDate(f)>today()?fieldDate:fileDate(f);
+  // Photos upload first (the dialog stays open meanwhile), so a failed upload never leaves a half-saved entry; a retry skips ones already uploaded.
+  const uploaded=editorForm._uploaded;if(files.length>uploaded.length){const submit=editorForm.querySelector('[type=submit]'),hint=editorForm.querySelector('.dialog-hint');submit.disabled=true;
+    try{for(let i=uploaded.length;i<files.length;i++){hint.textContent=files.length>1?`Uploading photo ${i+1} of ${files.length}…`:'Uploading photo…';uploaded.push({...await uploadPhoto(files[i]),takenDate:photoDate(files[i])})}}
+    catch(err){console.error(err);hint.textContent=(uploaded.length?`Uploaded ${uploaded.length} of ${files.length}. `:'')+(photoErrors[err.message]||photoErrors['upload-failed']);submit.disabled=false;return}}
   if(record){upsertLocal(collection,record);
     // Saving a coral rewrites its doc without embedded notes, so carry any not-yet-migrated notes along in the same batch.
     const carried=kind==='coral'?legacyCoralNotes.filter(n=>n.coralId===record.id):[];if(carried.length)commitOps([...carried.map(n=>['set','coralNotes',n]),['set','corals',record]]).catch(syncError);else cloudSet(collection,record)}
-  if(uploaded){const owner=kind==='photo'?ctx.owner:'visual',ownerId=kind==='photo'?ctx.ownerId:record.id,photo={id:kind==='photo'?id:uid(),owner,ownerId,...uploaded,takenDate:photoDate,caption:kind==='photo'?caption:'',createdAt:now};upsertLocal('photos',photo);cloudSet('photos',photo)}
-  pendingFile=null;editorDialog.close();render();toast(uploaded?'Photo saved':'Saved');
+  const owner=kind==='photo'?ctx.owner:'visual',ownerId=kind==='photo'?ctx.ownerId:record?.id;
+  const photos=uploaded.map(u=>({id:uid(),owner,ownerId,...u,caption:kind==='photo'?caption:'',createdAt:now}));photos.forEach(ph=>upsertLocal('photos',ph));if(photos.length)commitOps(photos.map(ph=>['set','photos',ph])).catch(syncError);
+  pendingFiles=[];editorForm._uploaded=[];dismiss(editorDialog);render();toast(photos.length>1?`${photos.length} photos saved`:photos.length?'Photo saved':'Saved');
 };
 function upsertLocal(collection,record){const a=data[collection],i=a.findIndex(x=>x.id===record.id);if(i>=0)a[i]=record;else a.push(record)}
 // Delete immediately (with related notes/entries/photos) and offer Undo, which writes everything back.
@@ -274,18 +291,22 @@ function deleteItem(kind,id){const collection=KIND_COLLECTION[kind],item=findKin
 function wireAutoGrow(root){root.querySelectorAll('textarea').forEach(t=>{const grow=()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,600)+'px';t.style.overflowY=t.scrollHeight>600?'auto':'hidden'};t.addEventListener('input',grow);grow()})}
 // Only treat it as an outside tap if the press also started outside (a text selection dragged past the edge shouldn't close).
 let pressStartedOutside=false;document.addEventListener('pointerdown',e=>{pressStartedOutside=e.target===editorDialog||e.target===settingsDialog||e.target===photoDialog},true);
-editorDialog.addEventListener('click',e=>{if(e.target===editorDialog&&pressStartedOutside&&guardEditorClose())editorDialog.close()});editorDialog.addEventListener('cancel',e=>{if(!guardEditorClose())e.preventDefault()});
-settingsDialog.addEventListener('click',e=>{if(e.target===settingsDialog&&pressStartedOutside)settingsDialog.close()});photoDialog.addEventListener('click',e=>{if(e.target===photoDialog&&pressStartedOutside)photoDialog.close()});
-editorDialog.addEventListener('close',()=>{const img=editorForm.querySelector('.photo-preview img');if(img?.src.startsWith('blob:'))URL.revokeObjectURL(img.src);scheduleRender()});settingsDialog.addEventListener('close',scheduleRender);
+editorDialog.addEventListener('click',e=>{if(e.target===editorDialog&&pressStartedOutside&&guardEditorClose())dismiss(editorDialog)});editorDialog.addEventListener('cancel',e=>{if(!guardEditorClose())e.preventDefault()});
+settingsDialog.addEventListener('click',e=>{if(e.target===settingsDialog&&pressStartedOutside)dismiss(settingsDialog)});photoDialog.addEventListener('click',e=>{if(e.target===photoDialog&&pressStartedOutside)dismiss(photoDialog)});
+editorDialog.addEventListener('close',()=>{editorForm.querySelectorAll('.photo-preview img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src)});pendingFiles=[];scheduleRender()});settingsDialog.addEventListener('close',scheduleRender);
 
 function toast(msg,action=null){clearTimeout(toastTimer);const el=$('#toast');el.textContent=msg;if(action){const b=document.createElement('button');b.type='button';b.className='toast-action';b.textContent=action.label;b.onclick=()=>{clearTimeout(toastTimer);el.classList.remove('show');action.run()};el.append(b)}el.classList.add('show');toastTimer=setTimeout(()=>el.classList.remove('show'),action?7000:2400)}
 
 $('#moreButton').onclick=openSettings;
-function openSettings(){$('#settingsContent').innerHTML=`${closeButton()}<h2>Settings</h2><section class="settings-section"><h3>Tank</h3><p>Volume: ${TANK_GALLONS} gallons</p></section><section class="settings-section"><h3>Backup & restore</h3><p>Download a copy of all your CoralDar data, or restore from one. Restoring replaces what’s in the app now. Photos stay in Cloudinary; the backup keeps their links.</p><div class="toolbar"><button class="button secondary" id="backupButton">Download backup</button><button class="button secondary" id="restoreButton">Restore backup</button><input id="restoreFile" type="file" accept="application/json,.json" hidden></div><p id="backupStatus" class="settings-status" role="status"></p></section><section class="settings-section"><h3>Account</h3><p id="syncText">${syncLabel()}</p><button class="button secondary" id="signOutButton">Sign out</button><p>CoralDar release ${RELEASE}</p></section>`;settingsDialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>settingsDialog.close());$('#backupButton').onclick=downloadBackup;$('#restoreButton').onclick=()=>$('#restoreFile').click();$('#restoreFile').onchange=restoreBackup;$('#signOutButton').onclick=signOutUser;settingsDialog.showModal()}
+function openSettings(){$('#settingsContent').innerHTML=`${closeButton()}<h2>Settings</h2><section class="settings-section"><h3>Tank</h3><p>Volume: ${TANK_GALLONS} gallons</p></section><section class="settings-section"><h3>Backup & restore</h3><p>Download a copy of all your CoralDar data, or restore from one. Restoring replaces what’s in the app now. Photos stay in Cloudinary; the backup keeps their links.</p><div class="toolbar"><button class="button secondary" id="backupButton">Download backup</button><button class="button secondary" id="restoreButton">Restore backup</button><input id="restoreFile" type="file" accept="application/json,.json" hidden></div><p id="backupStatus" class="settings-status" role="status"></p></section><section class="settings-section"><h3>Account</h3><p id="syncText">${syncLabel()}</p><button class="button secondary" id="signOutButton">Sign out</button><p>CoralDar release ${RELEASE}</p></section>`;settingsDialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dismiss(settingsDialog));$('#backupButton').onclick=downloadBackup;$('#restoreButton').onclick=()=>$('#restoreFile').click();$('#restoreFile').onchange=restoreBackup;$('#signOutButton').onclick=signOutUser;settingsDialog.showModal()}
 function bytesToB64(bytes){let s='';bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function b64ToBytes(s){return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
 async function deriveKey(password,salt){const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:180000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
-function downloadBackup(){const payload={format:BACKUP_FORMAT,version:3,exportedAt:timestamp(),data:allData()},blob=new Blob([JSON.stringify(payload,null,1)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`coraldar-backup-${today()}.json`;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
+function downloadBackup(){const payload={format:BACKUP_FORMAT,version:3,exportedAt:timestamp(),data:allData()};saveFile(new Blob([JSON.stringify(payload,null,1)],{type:'application/json'}),`coraldar-backup-${today()}.json`)}
+const canShareFiles = () => coarsePointer.matches&&!!navigator.canShare?.({files:[new File([''],'x.jpg',{type:'image/jpeg'})]});
+// On phones, hand files to the native share sheet (Save to Files, AirDrop…); elsewhere, download.
+async function saveFile(blob,filename){const file=new File([blob],filename,{type:blob.type});if(coarsePointer.matches&&navigator.canShare?.({files:[file]})){try{await navigator.share({files:[file]});return}catch(err){if(err.name==='AbortError')return}}
+  const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
 async function readBackup(payload){if(payload?.format===BACKUP_FORMAT)return payload.data;if(payload?.format!==LEGACY_ENCRYPTED_FORMAT)throw Error('wrong format');const password=prompt('This older backup is password protected. Enter its password.');if(!password)return null;const key=await deriveKey(password,b64ToBytes(payload.salt)),plain=await crypto.subtle.decrypt({name:'AES-GCM',iv:b64ToBytes(payload.iv)},key,b64ToBytes(payload.ciphertext));return JSON.parse(new TextDecoder().decode(plain)).data}
 async function restoreBackup(e){const file=e.target.files?.[0];e.target.value='';if(!file)return;$('#backupStatus').textContent='';try{const raw=await readBackup(JSON.parse(await file.text()));if(!raw)return;const restored=normalizeData(raw),before=allData();
   // Older backups predate some collections (fish list, photos, ATO refills); keep what's in the app for those.
@@ -365,6 +386,46 @@ $('#signInButton').onclick=async()=>{if(!firebase)return;const button=$('#signIn
   'auth/operation-not-allowed':'Google sign-in isn’t available right now.'
 };$('#authStatus').textContent=messages[code]||'Sign-in didn’t finish. Please try again.'}finally{button.disabled=false}};
 async function signOutUser(){settingsDialog.close();if(firebase)await firebase.signOut(firebase.auth);else clearPrivateLocal()}
+
+// ---- Native-feel gestures ----
+// Sheets animate away on phones; everywhere else (and with reduced motion) they just close.
+function dismiss(dialog){if(!dialog.open||dialog.classList.contains('sheet-closing'))return;if(!narrowQuery.matches||reducedMotion.matches)return dialog.close();dialog.classList.add('sheet-closing');
+  const done=()=>{if(!dialog.classList.contains('sheet-closing'))return;dialog.classList.remove('sheet-closing');dialog.style.removeProperty('--drag');dialog.close()};dialog.addEventListener('animationend',done,{once:true});setTimeout(done,400)}
+// Drag a sheet down by its top edge (or from anywhere once its content is scrolled to the top) to dismiss it.
+function enableSheetDrag(dialog){let startY=0,startT=0,dy=0,state='';
+  dialog.addEventListener('touchstart',e=>{state='';if(!narrowQuery.matches||e.touches.length!==1||e.target.closest('input,textarea,select,.photo-strip,.photo-preview'))return;const inner=dialog.querySelector('.dialog-inner'),y=e.touches[0].clientY;if(y-dialog.getBoundingClientRect().top>48&&inner.scrollTop>0)return;startY=y;startT=e.timeStamp;dy=0;state='maybe'},{passive:true});
+  dialog.addEventListener('touchmove',e=>{if(!state)return;const d=e.touches[0].clientY-startY;if(state==='maybe'){if(Math.abs(d)<6)return;if(d<0){state='';return}state='drag';dialog.classList.add('sheet-dragging')}dy=Math.max(0,d);dialog.style.setProperty('--drag',`${dy}px`);e.preventDefault()},{passive:false});
+  dialog.addEventListener('touchend',e=>{if(state!=='drag'){state='';return}state='';dialog.classList.remove('sheet-dragging');const fast=dy/Math.max(1,e.timeStamp-startT)>.6,far=dy>Math.min(160,dialog.offsetHeight*.3);
+    if((fast||far)&&(dialog!==editorDialog||guardEditorClose()))dismiss(dialog);else dialog.style.setProperty('--drag','0px')});
+  dialog.addEventListener('touchcancel',()=>{if(state==='drag'){dialog.classList.remove('sheet-dragging');dialog.style.setProperty('--drag','0px')}state=''})}
+[editorDialog,settingsDialog,photoDialog].forEach(enableSheetDrag);
+
+// Back from a fish/coral page to its list, sliding the page away.
+function inDetailView(){return narrowQuery.matches&&!document.querySelector('dialog[open]')&&((activeTab==='fish'&&fishDetailOpen&&!!selectedFish())||(activeTab==='coral'&&coralDetailOpen&&!!selectedCoral()))}
+function showList(){if(activeTab==='fish')fishDetailOpen=false;else coralDetailOpen=false;nextAnim='list-in';render();scrollTo(0,0)}
+function slideBack(){const screen=main.querySelector('.screen');if(reducedMotion.matches||!screen)return showList();screen.style.transition='transform .22s cubic-bezier(.4,0,.6,1)';screen.style.transform='translateX(100%)';setTimeout(showList,220)}
+// Swipe from the left edge to go back (home-screen app only; in Safari the edge swipe is the browser's).
+let edge=null;
+document.addEventListener('touchstart',e=>{edge=null;if(!standalone||e.touches.length!==1||!inDetailView()||e.touches[0].clientX>24)return;edge={x0:e.touches[0].clientX,y0:e.touches[0].clientY,t0:e.timeStamp,dx:0,locked:false,screen:main.querySelector('.screen')}},{passive:true});
+document.addEventListener('touchmove',e=>{if(!edge)return;const dx=e.touches[0].clientX-edge.x0,dy=e.touches[0].clientY-edge.y0;if(!edge.locked){if(Math.abs(dx)<8&&Math.abs(dy)<8)return;if(Math.abs(dy)>Math.abs(dx)||dx<0){edge=null;return}edge.locked=true;edge.screen.classList.add('swipe-back')}
+  edge.dx=Math.max(0,dx);edge.screen.style.transform=`translateX(${edge.dx}px)`;e.preventDefault()},{passive:false});
+document.addEventListener('touchend',e=>{if(!edge?.locked){edge=null;return}const {screen,dx,t0}=edge;edge=null;screen.classList.remove('swipe-back');
+  if(dx>innerWidth*.35||dx/Math.max(1,e.timeStamp-t0)>.5){screen.style.transition='transform .18s ease-out';screen.style.transform='translateX(100%)';setTimeout(showList,180)}
+  else{screen.style.transition='transform .25s cubic-bezier(.2,.8,.2,1)';screen.style.transform='';screen.addEventListener('transitionend',()=>screen.style.transition='',{once:true})}});
+
+// Swipe a row left to reveal Delete; swipe far to delete right away (Undo stays available).
+const SWIPE_ROWS='.row,.timeline-item,.note-card',SWIPE_OPEN=88;let swipe=null,openSwipeRow=null;
+function setSwipe(row,dx){row.classList.toggle('swipe-active',dx!==0||row.classList.contains('swiping'));row.style.setProperty('--dx',`${dx}px`);if(dx===0)setTimeout(()=>{if(row.style.getPropertyValue('--dx')==='0px')row.classList.remove('swipe-active')},260)}
+function closeSwipe(){if(openSwipeRow){setSwipe(openSwipeRow,0);openSwipeRow=null}}
+function swipeDelete(row){const del=row.querySelector('[data-delete]');openSwipeRow=null;deleteItem(del.dataset.delete,del.dataset.id)}
+main.addEventListener('touchstart',e=>{swipe=null;if(e.touches.length!==1)return;const row=e.target.closest(SWIPE_ROWS),t=e.touches[0];if(openSwipeRow&&openSwipeRow!==row)closeSwipe();
+  if(!row||!row.querySelector(':scope [data-delete]')||e.target.closest('.photo-strip,.swipe-action')||(t.clientX<=24&&inDetailView()&&standalone))return;swipe={row,x0:t.clientX,y0:t.clientY,base:row===openSwipeRow?-SWIPE_OPEN:0,dx:0,locked:false}},{passive:true});
+main.addEventListener('touchmove',e=>{if(!swipe)return;const dx=e.touches[0].clientX-swipe.x0,dy=e.touches[0].clientY-swipe.y0;if(!swipe.locked){if(Math.abs(dx)<8&&Math.abs(dy)<8)return;if(Math.abs(dy)>Math.abs(dx)){swipe=null;return}swipe.locked=true;const row=swipe.row;
+    if(!row.querySelector(':scope > .swipe-action')){const b=document.createElement('button');b.type='button';b.className='swipe-action';b.textContent='Delete';b.onclick=()=>swipeDelete(row);row.append(b)}row.classList.add('swiping')}
+  swipe.dx=Math.min(0,Math.max(-swipe.row.offsetWidth,swipe.base+dx));setSwipe(swipe.row,swipe.dx);e.preventDefault()},{passive:false});
+main.addEventListener('touchend',()=>{if(!swipe?.locked){swipe=null;return}const {row,dx}=swipe;swipe=null;row.classList.remove('swiping');
+  if(-dx>row.offsetWidth*.6){setSwipe(row,-row.offsetWidth);setTimeout(()=>swipeDelete(row),180)}else if(-dx>SWIPE_OPEN/2){setSwipe(row,-SWIPE_OPEN);openSwipeRow=row}else{setSwipe(row,0);if(openSwipeRow===row)openSwipeRow=null}});
+document.addEventListener('touchstart',e=>{if(openSwipeRow&&!openSwipeRow.contains(e.target))closeSwipe()},{passive:true});
 
 // Seasonal card: shown once per year on its date, dismissal remembered on this device.
 const OCCASION = {month:10, day:13, text:'SGFwcHkgYmlydGhkYXkgTWVnYW4hIXxMb3ZlLCBLZXZpbg=='};
