@@ -1,6 +1,6 @@
 'use strict';
 
-const RELEASE = 10;
+const RELEASE = 11;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
@@ -113,7 +113,9 @@ async function uploadPhoto(file){if(!CLOUDINARY.cloudName||!CLOUDINARY.signUrl)t
 const photoErrors = {'not-configured':'Photo uploads aren’t set up yet.','offline':'You’re offline. Photos need a connection to upload.','unreadable':'That image couldn’t be read. Try a different photo.','upload-failed':'The photo didn’t upload. Please try again.','sign-failed':'The photo couldn’t be authorized for upload. Try signing out and back in.'};
 
 function icon(path){return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`}
-function renderNav(){nav.innerHTML=NAV.map(([id,label,path,aria])=>`<button class="nav-tab ${id===activeTab?'active':''}" data-tab="${id}" ${id===activeTab?'aria-current="page"':''} ${aria?`aria-label="${esc(aria)}"`:''}>${icon(path)}<span>${esc(label)}</span></button>`).join('');nav.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;render();scrollTo(0,0)})}
+function renderNav(){nav.innerHTML=NAV.map(([id,label,path,aria])=>`<button class="nav-tab ${id===activeTab?'active':''}" data-tab="${id}" ${id===activeTab?'aria-current="page"':''} ${aria?`aria-label="${esc(aria)}"`:''}>${icon(path)}<span>${esc(label)}</span></button>`).join('');nav.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;
+  // Tapping Fish or Coral always lands on the full list, even from a fish or coral's detail view.
+  if(activeTab==='fish')fishDetailOpen=false;if(activeTab==='coral')coralDetailOpen=false;render();scrollTo(0,0)})}
 const selectedFish = () => data.fish.find(f=>f.id===fishTab);
 const selectedCoral = () => data.corals.find(c=>c.id===coralTab);
 const fishDetailShown = () => !!selectedFish()&&(!narrowQuery.matches||fishDetailOpen);
