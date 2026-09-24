@@ -1,11 +1,12 @@
 'use strict';
 
-const RELEASE = 9;
+const RELEASE = 10;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
-// Photos upload straight to Cloudinary with an unsigned upload preset; only the resulting URL is stored in Firestore.
-const CLOUDINARY = {cloudName:'qacj7ove', uploadPreset:''};
+// Photos upload straight to Cloudinary using a one-time signature from the CoralDar Worker, which only signs for the
+// owner's Firebase account. Only the resulting URL is stored in Firestore.
+const CLOUDINARY = {cloudName:'qacj7ove', signUrl:'https://gentle-cell-f554.meganec96.workers.dev'};
 const STORAGE_KEY = 'coraldar-v1'; // legacy local mirror; migrated to Firestore's offline cache on sign-in
 const BACKUP_FORMAT = 'coraldar-backup';
 const LEGACY_ENCRYPTED_FORMAT = 'coraldar-encrypted-backup'; // older password-protected backups; still restorable
@@ -102,8 +103,14 @@ function avatar(photo,fallbackIcon){return photo?`<img class="avatar" src="${esc
 function photoOwnerLabel(p){if(p.owner==='fish')return data.fish.find(f=>f.id===p.ownerId)?.name||'Fish';if(p.owner==='coral')return data.corals.find(c=>c.id===p.ownerId)?.name||'Coral';if(p.owner==='goal')return data.goals.find(g=>g.id===p.ownerId)?.title||'Goal';return 'Tank Visual'}
 // Downscale on the device before uploading: faster on mobile data and lighter on the Cloudinary quota.
 async function shrinkImage(file,maxEdge=2048){let bitmap;try{bitmap=await createImageBitmap(file)}catch{throw Error('unreadable')}const scale=Math.min(1,maxEdge/Math.max(bitmap.width,bitmap.height)),canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(bitmap.height*scale);canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close?.();return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(Error('unreadable')),'image/jpeg',.86))}
-async function uploadPhoto(file){if(!CLOUDINARY.cloudName||!CLOUDINARY.uploadPreset)throw Error('not-configured');if(!navigator.onLine)throw Error('offline');const body=new FormData();body.append('file',await shrinkImage(file));body.append('upload_preset',CLOUDINARY.uploadPreset);const res=await fetch(`https://api.cloudinary.com/v1_1/${encodeURIComponent(CLOUDINARY.cloudName)}/image/upload`,{method:'POST',body});if(!res.ok)throw Error('upload-failed');const out=await res.json();const url=safePhotoUrl(out.secure_url);if(!url)throw Error('upload-failed');return {url,publicId:safeText(out.public_id,300),width:finite(out.width,0,1e5),height:finite(out.height,0,1e5)}}
-const photoErrors = {'not-configured':'Photo uploads aren’t set up yet.','offline':'You’re offline. Photos need a connection to upload.','unreadable':'That image couldn’t be read. Try a different photo.','upload-failed':'The photo didn’t upload. Please try again.'};
+async function uploadPhoto(file){if(!CLOUDINARY.cloudName||!CLOUDINARY.signUrl)throw Error('not-configured');if(!navigator.onLine)throw Error('offline');
+  const [image,idToken]=await Promise.all([shrinkImage(file),currentUser?.getIdToken?.()]);if(!idToken)throw Error('upload-failed');
+  let sign;try{const res=await fetch(CLOUDINARY.signUrl,{method:'POST',headers:{Authorization:`Bearer ${idToken}`}});if(!res.ok)throw Error();sign=await res.json()}catch{throw Error('sign-failed')}
+  const uploadUrl=String(sign?.uploadUrl||'');if(!uploadUrl.startsWith(`https://api.cloudinary.com/v1_1/${CLOUDINARY.cloudName}/`)||!sign.signature||!sign.apiKey||!sign.timestamp)throw Error('sign-failed');
+  const body=new FormData();body.append('file',image);body.append('api_key',sign.apiKey);body.append('timestamp',sign.timestamp);body.append('signature',sign.signature);if(sign.folder)body.append('folder',sign.folder);
+  const res=await fetch(uploadUrl,{method:'POST',body});if(!res.ok)throw Error('upload-failed');const out=await res.json();const url=safePhotoUrl(out.secure_url);if(!url)throw Error('upload-failed');
+  return {url,publicId:safeText(out.public_id,300),width:finite(out.width,0,1e5),height:finite(out.height,0,1e5)}}
+const photoErrors = {'not-configured':'Photo uploads aren’t set up yet.','offline':'You’re offline. Photos need a connection to upload.','unreadable':'That image couldn’t be read. Try a different photo.','upload-failed':'The photo didn’t upload. Please try again.','sign-failed':'The photo couldn’t be authorized for upload. Try signing out and back in.'};
 
 function icon(path){return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`}
 function renderNav(){nav.innerHTML=NAV.map(([id,label,path,aria])=>`<button class="nav-tab ${id===activeTab?'active':''}" data-tab="${id}" ${id===activeTab?'aria-current="page"':''} ${aria?`aria-label="${esc(aria)}"`:''}>${icon(path)}<span>${esc(label)}</span></button>`).join('');nav.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;render();scrollTo(0,0)})}
