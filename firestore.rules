@@ -1,28 +1,13 @@
 rules_version = '2';
 
-// CoralDar is a single-owner app. The client-side OWNER_UID check in app.js only
-// hides the UI; these rules are what actually protect the data.
+// CoralDar is a single-owner app. Only the owner's account can read or write,
+// and only inside their own folder. Everything else is denied.
 service cloud.firestore {
   match /databases/{database}/documents {
-    function isOwner(uid) {
-      return request.auth != null
+    match /coraldarUsers/{uid}/{document=**} {
+      allow read, write: if request.auth != null
         && request.auth.uid == uid
         && uid == 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
     }
-
-    function knownCollection(collection) {
-      return collection in ['tests', 'waterChanges', 'doses', 'fishEntries', 'corals', 'coralNotes', 'tankVisual', 'goals'];
-    }
-
-    match /coraldarUsers/{uid}/{collection}/{docId} {
-      allow read, delete: if isOwner(uid) && knownCollection(collection);
-      allow create, update: if isOwner(uid) && knownCollection(collection)
-        && request.resource.data.id == docId
-        && (!('photos' in request.resource.data)
-            || (request.resource.data.photos is list && request.resource.data.photos.size() <= 50))
-        && (collection != 'coralNotes' || request.resource.data.coralId is string);
-    }
-
-    // Everything else is denied by default.
   }
 }
