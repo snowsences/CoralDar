@@ -5,7 +5,7 @@ const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
 // Photos upload straight to Cloudinary with an unsigned upload preset; only the resulting URL is stored in Firestore.
-const CLOUDINARY = {cloudName:'', uploadPreset:''};
+const CLOUDINARY = {cloudName:'qacj7ove', uploadPreset:''};
 const STORAGE_KEY = 'coraldar-v1'; // legacy local mirror; migrated to Firestore's offline cache on sign-in
 const BACKUP_FORMAT = 'coraldar-backup';
 const LEGACY_ENCRYPTED_FORMAT = 'coraldar-encrypted-backup'; // older password-protected backups; still restorable
