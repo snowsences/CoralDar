@@ -1,12 +1,13 @@
 'use strict';
 
-const RELEASE = 13;
+const RELEASE = 14;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
 // Photos upload straight to Cloudinary using a one-time signature from the CoralDar Worker, which only signs for the
 // owner's Firebase account. Only the resulting URL is stored in Firestore.
 const CLOUDINARY = {cloudName:'qacj7ove', signUrl:'https://gentle-cell-f554.meganec96.workers.dev'};
+const SHIMMER_KEY = 'coraldar-shimmer'; // per-device preference for the Home photo's water shimmer
 const STORAGE_KEY = 'coraldar-v1'; // legacy local mirror; migrated to Firestore's offline cache on sign-in
 const BACKUP_FORMAT = 'coraldar-backup';
 const LEGACY_ENCRYPTED_FORMAT = 'coraldar-encrypted-backup'; // older password-protected backups; still restorable
@@ -24,7 +25,8 @@ const ICONS = {
   edit:'M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4ZM13.5 6.5l4 4',close:'M6 6l12 12M18 6 6 18',plus:'M12 5v14M5 12h14',back:'M15 5l-7 7 7 7',
   camera:'M4 8h3.2l1.6-2.5h6.4L16.8 8H20v11H4zM12 16.5a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z',
   fish:'M21 12c-2.2 3.6-5.2 5.5-8.6 5.5C9 17.5 7.2 15 7 12c.2-3 2-5.5 5.4-5.5 3.4 0 6.4 1.9 8.6 5.5ZM7 12 3 8.5v7L7 12Zm9.6-1h.01',
-  coral:'M12 21v-8M12 13 8 9M12 13l4-5M8 9 5 4M16 8l-4-4M8 9 1-5'
+  coral:'M12 21v-8M12 13 8 9M12 13l4-5M8 9 5 4M16 8l-4-4M8 9 1-5',check:'M5 12.5l4.5 4.5L19 7.5',
+  bubbles:'M9 17.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM16.5 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM16 19.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z'
 };
 const NAV = [
   ['home','Home','M3 11.5 12 4l9 7.5M5.5 9.5V20h13V9.5M10 20v-5h4v5'],['testing','Testing','M4 19V5m0 7h16M8 5v14M12 8v8M16 6v12'],
@@ -41,7 +43,7 @@ const standalone = matchMedia('(display-mode: standalone)').matches || navigator
 let data = emptyData();
 let activeTab = 'home';
 let testType = 'temperature', testRange = '3m', fishTab = '', coralTab = '', fishDetailOpen = false, coralDetailOpen = false;
-let firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, editorSnapshot = '', authNotice = '', cacheReady = Promise.resolve(), pendingSync = {}, legacyCoralNotes = [], pendingFiles = [], nextAnim = '';
+let firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, editorSnapshot = '', authNotice = '', cacheReady = Promise.resolve(), pendingSync = {}, legacyCoralNotes = [], pendingFiles = [], nextAnim = '', animateChart = false, highlightId = '', highlight = null, renderHoldUntil = 0, renderSkipped = false;
 
 function emptyData(){ return {tests:[],waterChanges:[],doses:[],fish:[],fishEntries:[],corals:[],coralNotes:[],tankVisual:[],goals:[],photos:[],atoRefills:[],meta:[]}; }
 function readLegacyLocal(){ try{const raw=localStorage.getItem(STORAGE_KEY);return raw?normalizeData(JSON.parse(raw)):null}catch{return null} }
@@ -55,6 +57,7 @@ const safeTime = value => /^\d{2}:\d{2}$/.test(String(value||'')) ? String(value
 const finite = (value,min=-1e6,max=1e6) => { const n=Number(value); return Number.isFinite(n)?Math.max(min,Math.min(max,n)):0; };
 // Photos may only point at Cloudinary image delivery URLs; anything else (javascript:, data:, other hosts, markup) is dropped.
 const CLOUDINARY_IMAGE = /^https:\/\/res\.cloudinary\.com\/[A-Za-z0-9_-]+\/image\/upload\/[A-Za-z0-9_\-.\/,:]+$/;
+const shimmerOn = () => { try{ return localStorage.getItem(SHIMMER_KEY)!=='off'; }catch{ return true; } };
 const safePhotoUrl = url => typeof url==='string'&&url.length<=500&&CLOUDINARY_IMAGE.test(url) ? url : '';
 const safePhotos = (list,max) => (Array.isArray(list)?list:[]).slice(0,max).map(p=>{const url=safePhotoUrl(typeof p==='string'?p:p?.url);return url?{id:safeId(p?.id),url,caption:safeText(p?.caption,200),createdAt:safeText(p?.createdAt,40)||timestamp()}:null}).filter(Boolean);
 const today = () => new Date().toLocaleDateString('en-CA');
@@ -100,8 +103,8 @@ const thumbSrc = p => photoSize(p.url,'c_fill,g_auto,w_320,h_320,q_auto,f_auto')
 const fullSrc = p => photoSize(p.url,'c_limit,w_1800,h_1800,q_auto,f_auto');
 const photosFor = (owner,ownerId) => data.photos.filter(p=>p.owner===owner&&p.ownerId===ownerId).sort((a,b)=>`${b.takenDate} ${b.createdAt}`.localeCompare(`${a.takenDate} ${a.createdAt}`));
 const latestPhoto = (owner,ownerId) => (ownerId?photosFor(owner,ownerId):data.photos.filter(p=>p.owner===owner).sort((a,b)=>`${b.takenDate} ${b.createdAt}`.localeCompare(`${a.takenDate} ${a.createdAt}`)))[0];
-function photoStrip(owner,ownerId){const photos=photosFor(owner,ownerId);return `<div class="photo-strip">${photos.map(p=>`<button type="button" class="photo-thumb" data-photo="${esc(p.id)}" aria-label="Photo from ${esc(fmtDate(p.takenDate))}"><img src="${esc(thumbSrc(p))}" alt="" loading="lazy" crossorigin="anonymous"></button>`).join('')}<button type="button" class="photo-add" data-add-photo="${owner}" data-owner-id="${esc(ownerId)}">${icon(ICONS.camera)}<span>Add photo</span></button></div>`}
-function avatar(photo,fallbackIcon){return photo?`<img class="avatar" src="${esc(thumbSrc(photo))}" alt="" loading="lazy" crossorigin="anonymous">`:`<span class="avatar avatar-empty">${icon(fallbackIcon)}</span>`}
+function photoStrip(owner,ownerId){const photos=photosFor(owner,ownerId);return `<div class="photo-strip">${photos.map(p=>`<button type="button" class="photo-thumb skeleton" data-photo="${esc(p.id)}" aria-label="Photo from ${esc(fmtDate(p.takenDate))}"><img class="fade-img" src="${esc(thumbSrc(p))}" alt="" loading="lazy" crossorigin="anonymous"></button>`).join('')}<button type="button" class="photo-add" data-add-photo="${owner}" data-owner-id="${esc(ownerId)}">${icon(ICONS.camera)}<span>Add photo</span></button></div>`}
+function avatar(photo,fallbackIcon){return photo?`<span class="avatar skeleton"><img class="fade-img" src="${esc(thumbSrc(photo))}" alt="" loading="lazy" crossorigin="anonymous"></span>`:`<span class="avatar avatar-empty">${icon(fallbackIcon)}</span>`}
 function photoOwnerLabel(p){if(p.owner==='fish')return data.fish.find(f=>f.id===p.ownerId)?.name||'Fish';if(p.owner==='coral')return data.corals.find(c=>c.id===p.ownerId)?.name||'Coral';if(p.owner==='goal')return data.goals.find(g=>g.id===p.ownerId)?.title||'Goal';return 'Tank Visual'}
 // Downscale on the device before uploading: faster on mobile data and lighter on the Cloudinary quota.
 async function shrinkImage(file,maxEdge=2048){let bitmap;try{bitmap=await createImageBitmap(file)}catch{throw Error('unreadable')}const scale=Math.min(1,maxEdge/Math.max(bitmap.width,bitmap.height)),canvas=document.createElement('canvas');canvas.width=Math.round(bitmap.width*scale);canvas.height=Math.round(bitmap.height*scale);canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close?.();return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(Error('unreadable')),'image/jpeg',.86))}
@@ -115,29 +118,47 @@ async function uploadPhoto(file){if(!CLOUDINARY.cloudName||!CLOUDINARY.signUrl)t
 const photoErrors = {'not-configured':'Photo uploads aren’t set up yet.','offline':'You’re offline. Photos need a connection to upload.','unreadable':'That image couldn’t be read. Try a different photo.','upload-failed':'The photo didn’t upload. Please try again.','sign-failed':'The photo couldn’t be authorized for upload. Try signing out and back in.'};
 
 function icon(path){return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${path}"/></svg>`}
-function renderNav(){nav.innerHTML=NAV.map(([id,label,path,aria])=>`<button class="nav-tab ${id===activeTab?'active':''}" data-tab="${id}" ${id===activeTab?'aria-current="page"':''} ${aria?`aria-label="${esc(aria)}"`:''}>${icon(path)}<span>${esc(label)}</span></button>`).join('');nav.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{activeTab=b.dataset.tab;
-  // Tapping Fish or Coral always lands on the full list, even from a fish or coral's detail view.
-  if(activeTab==='fish')fishDetailOpen=false;if(activeTab==='coral')coralDetailOpen=false;nextAnim='fade';render();scrollTo(0,0)})}
+// Built once, then only the active state changes, so the desktop underline can slide and the tapped icon can pop.
+function renderNav(){if(!nav.dataset.built){nav.dataset.built='1';nav.innerHTML=NAV.map(([id,label,path,aria])=>`<button class="nav-tab" data-tab="${id}" ${aria?`aria-label="${esc(aria)}"`:''}>${icon(path)}<span>${esc(label)}</span></button>`).join('')+'<span class="nav-indicator" aria-hidden="true"></span>';
+    nav.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>{const changed=activeTab!==b.dataset.tab;activeTab=b.dataset.tab;
+      // Tapping Fish or Coral always lands on the full list, even from a fish or coral's detail view.
+      if(activeTab==='fish')fishDetailOpen=false;if(activeTab==='coral')coralDetailOpen=false;nextAnim='fade';
+      if(changed&&!reducedMotion.matches){b.classList.remove('pop');void b.offsetWidth;b.classList.add('pop')}render();scrollTo(0,0)})}
+  nav.querySelectorAll('[data-tab]').forEach(b=>{const on=b.dataset.tab===activeTab;b.classList.toggle('active',on);if(on)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});placeIndicator()}
+function placeIndicator(){const ind=nav.querySelector('.nav-indicator'),b=nav.querySelector('.nav-tab.active');if(!ind||!b||!b.offsetWidth)return;ind.style.width=`${b.offsetWidth-18}px`;ind.style.transform=`translateX(${b.offsetLeft+9}px)`;if(!ind.classList.contains('ready'))requestAnimationFrame(()=>ind.classList.add('ready'))}
+document.fonts?.ready.then(placeIndicator);
 const selectedFish = () => data.fish.find(f=>f.id===fishTab);
 const selectedCoral = () => data.corals.find(c=>c.id===coralTab);
 const fishDetailShown = () => !!selectedFish()&&(!narrowQuery.matches||fishDetailOpen);
 const coralDetailShown = () => !!selectedCoral()&&(!narrowQuery.matches||coralDetailOpen);
 function primaryLabel(){return {fish:fishDetailShown()?'Add Entry':'Add Fish',coral:coralDetailShown()?'Add Note':'Add Coral',visual:'Add Entry',goals:'Add Goal'}[activeTab]||'Log Data'}
 function render(){renderNav();primaryAction.textContent=primaryLabel();
+  const anim=nextAnim,motion=!reducedMotion.matches;nextAnim='';animateChart=!!anim;
   ({home:renderHome,testing:renderTesting,water:renderWater,dosing:renderDosing,fish:renderFish,coral:renderCoral,visual:renderVisual,goals:renderGoals}[activeTab]||renderHome)();
-  wirePhotos();openSwipeRow=null;
-  // One-shot transition requested by a user action (never by background sync re-renders).
-  const anim=nextAnim;nextAnim='';if(anim&&!reducedMotion.matches)main.firstElementChild?.classList.add(`anim-${anim}`);
+  wirePhotos();openSwipeRow=null;animateChart=false;markLoadedImages(main);
+  // One-shot motion requested by a user action (never by background sync re-renders).
+  if(anim&&motion){main.firstElementChild?.classList.add(`anim-${anim}`);main.querySelectorAll('.list,.entity-list,.timeline,.notes-list,.home-stats').forEach(l=>l.classList.add('stagger'));main.querySelectorAll('[data-count]').forEach(el=>countUp(el));staggerChartDots()}
+  // The saved/restored item glows; a sync re-render mid-glow picks the animation up where it was instead of dropping it.
+  if(highlightId){highlight={id:highlightId,t0:performance.now()};highlightId='';const el=findRendered(highlight.id);if(el&&motion)el.scrollIntoView({block:'nearest',behavior:'smooth'})}
+  if(highlight&&motion){const elapsed=performance.now()-highlight.t0,el=elapsed<1600&&findRendered(highlight.id);if(el){el.classList.add('just-added');el.style.animationDelay=`-${Math.round(elapsed)}ms`}else if(elapsed>=1600)highlight=null}
 }
+// The element showing a record (row, list entry, or photo), used for the saved-glow and the delete collapse.
+function findRendered(id){const q=CSS.escape(id);return main.querySelector(`.entity[data-fish="${q}"],.entity[data-coral="${q}"],.photo-thumb[data-photo="${q}"]`)||main.querySelector(`[data-delete][data-id="${q}"]`)?.closest('.row,.timeline-item,.note-card')||null}
+function countUp(el,from=0){const to=+el.dataset.count;if(!(to>0)&&!from)return;const t0=performance.now(),dur=Math.min(900,350+Math.abs(to-from)*40);const step=now=>{const k=Math.min(1,(now-t0)/dur);el.textContent=dayCount(Math.round(from+(to-from)*(1-Math.pow(1-k,3))));if(k<1)requestAnimationFrame(step)};el.textContent=dayCount(from);requestAnimationFrame(step)}
+// Photos fade in once loaded (over a shimmer placeholder) instead of popping in.
+function markLoadedImages(root){root.querySelectorAll('img.fade-img').forEach(i=>{if(i.complete&&i.naturalWidth)i.classList.add('loaded')})}
+document.addEventListener('load',e=>{if(e.target.classList?.contains('fade-img'))e.target.classList.add('loaded')},true);document.addEventListener('error',e=>{if(e.target.classList?.contains('fade-img'))e.target.classList.add('loaded')},true);
+// Dots pop in as the line draws past them.
+function staggerChartDots(){main.querySelectorAll('.chart-animate').forEach(svg=>{const w=svg.viewBox.baseVal.width||1;svg.querySelectorAll('.dot').forEach(d=>d.style.animationDelay=`${.1+.75*(+d.getAttribute('cx')/w)}s`)})}
 primaryAction.onclick=()=>{
   if(activeTab==='fish')return fishDetailShown()?openEditor('fishEntry',null,{fish:fishTab}):openEditor('fish');
   if(activeTab==='coral')return coralDetailShown()?openEditor('coralNote',null,{coralId:coralTab}):openEditor('coral');
   openEditor({water:'water',dosing:'dose',visual:'visual',goals:'goal'}[activeTab]||'test');
 };
 narrowQuery.addEventListener('change',()=>{if(currentUser)render()});
-let lastWidth=innerWidth,resizeTimer;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(innerWidth===lastWidth)return;lastWidth=innerWidth;if(currentUser&&['testing','water'].includes(activeTab)&&!document.querySelector('dialog[open]'))render()},150)});
+let lastWidth=innerWidth,resizeTimer;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{placeIndicator();if(innerWidth===lastWidth)return;lastWidth=innerWidth;if(currentUser&&['testing','water'].includes(activeTab)&&!document.querySelector('dialog[open]'))render()},150)});
 function screenHead(title,sub=''){return `<div class="screen-head"><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div></div>`}
-function empty(title,copy){return `<div class="empty"><h3>${esc(title)}</h3><div>${esc(copy)}</div></div>`}
+function empty(title,copy){return `<div class="empty"><div class="empty-icon">${icon(ICONS.bubbles)}</div><h3>${esc(title)}</h3><div>${esc(copy)}</div></div>`}
 function rowActions(kind,id,photoOwner=''){return `<div class="row-actions">${photoOwner?`<button class="row-action" data-add-photo="${photoOwner}" data-owner-id="${esc(id)}" aria-label="Add photo">${icon(ICONS.camera)}</button>`:''}<button class="row-action" data-edit="${kind}" data-id="${esc(id)}" aria-label="Edit">${icon(ICONS.edit)}</button><button class="row-action" data-delete="${kind}" data-id="${esc(id)}" aria-label="Delete">${icon(ICONS.close)}</button></div>`}
 function wireRows(){main.querySelectorAll('[data-edit]').forEach(b=>b.onclick=()=>openEditor(b.dataset.edit,findKind(b.dataset.edit,b.dataset.id)));main.querySelectorAll('[data-delete]').forEach(b=>b.onclick=()=>deleteItem(b.dataset.delete,b.dataset.id))}
 function wirePhotos(){main.querySelectorAll('[data-photo]').forEach(b=>b.onclick=()=>openPhotoViewer(b.dataset.photo));main.querySelectorAll('[data-add-photo]').forEach(b=>b.onclick=()=>openEditor('photo',null,{owner:b.dataset.addPhoto,ownerId:b.dataset.ownerId}))}
@@ -147,26 +168,35 @@ function findKind(kind,id){return (kind==='coralNote'?[...data.coralNotes,...leg
 function renderHome(){
   const hero=latestPhoto('visual'),lastWater=[...data.waterChanges].sort(byNewest)[0],lastAto=[...data.atoRefills].sort(byNewest)[0];
   main.innerHTML=`<section class="screen home">
-    <figure class="home-hero">${hero?`<button type="button" class="home-photo" data-photo="${esc(hero.id)}" aria-label="Open latest tank photo"><img src="${esc(fullSrc(hero))}" alt="Latest tank photo, ${esc(fmtDate(hero.takenDate))}" crossorigin="anonymous"></button>`:`<button type="button" class="home-photo home-photo-empty" id="homeAddPhoto">${icon(ICONS.camera)}<span>Add a tank photo in Tank Visual</span></button>`}
+    <figure class="home-hero">${hero?`<button type="button" class="home-photo skeleton" data-photo="${esc(hero.id)}" aria-label="Open latest tank photo"><img class="home-photo-low" src="${esc(photoSize(hero.url,'c_fill,g_auto,w_48,h_30,q_auto,f_auto'))}" alt="" crossorigin="anonymous"><img class="fade-img" src="${esc(fullSrc(hero))}" alt="Latest tank photo, ${esc(fmtDate(hero.takenDate))}" crossorigin="anonymous">${shimmerOn()&&!reducedMotion.matches?'<span class="shimmer" aria-hidden="true"></span>':''}</button>`:`<button type="button" class="home-photo home-photo-empty" id="homeAddPhoto">${icon(ICONS.camera)}<span>Add a tank photo in Tank Visual</span></button>`}
       <figcaption><h2 class="home-title">${TANK_GALLONS} Gallon Reef</h2>${hero?`<span class="muted">Photo from ${esc(fmtDate(hero.takenDate))}</span>`:''}</figcaption></figure>
     <div class="home-stats">
-      <div class="home-stat">${lastWater?`<p><strong>${dayCount(daysSince(lastWater.date))}</strong> since last water change</p>`:`<p>No water changes logged yet</p>`}</div>
-      <div class="home-stat">${lastAto?`<p><strong>${dayCount(daysSince(lastAto.date))}</strong> since ATO refill</p>`:`<p>No ATO refill logged yet</p>`}<button type="button" class="button primary" id="atoRefilled">Refilled!</button></div>
+      <div class="home-stat">${lastWater?`<p><strong data-count="${daysSince(lastWater.date)}">${dayCount(daysSince(lastWater.date))}</strong> since last water change</p>`:`<p>No water changes logged yet</p>`}</div>
+      <div class="home-stat">${lastAto?`<p><strong data-count="${daysSince(lastAto.date)}">${dayCount(daysSince(lastAto.date))}</strong> since ATO refill</p>`:`<p>No ATO refill logged yet</p>`}<button type="button" class="button primary" id="atoRefilled">Refilled!</button></div>
     </div></section>`;
   $('#homeAddPhoto')?.addEventListener('click',()=>{activeTab='visual';render()});
-  $('#atoRefilled').onclick=()=>{const record={id:uid(),date:today(),time:nowTime(),createdAt:timestamp()};upsertLocal('atoRefills',record);render();cloudSet('atoRefills',record);toast('ATO refill logged',{label:'Undo',run:()=>{data.atoRefills=data.atoRefills.filter(x=>x.id!==record.id);render();cloudDelete('atoRefills',record.id)}})};
+  $('#atoRefilled').onclick=e=>{const btn=e.currentTarget,stat=btn.parentElement,strong=stat.querySelector('[data-count]'),record={id:uid(),date:today(),time:nowTime(),createdAt:timestamp()};upsertLocal('atoRefills',record);cloudSet('atoRefills',record);
+    // A short "Done" moment: the button checks off and the counter rolls down to 0 before the screen refreshes.
+    if(reducedMotion.matches)render();else{renderHoldUntil=Date.now()+1400;btn.classList.add('done');btn.innerHTML=`${icon(ICONS.check)}<span>Done</span>`;if(strong){const from=+strong.dataset.count;strong.dataset.count='0';countUp(strong,from)}else stat.querySelector('p').innerHTML=`<strong>${dayCount(0)}</strong> since ATO refill`;setTimeout(()=>{renderHoldUntil=0;render()},1400)}toast('ATO refill logged',{label:'Undo',run:()=>{data.atoRefills=data.atoRefills.filter(x=>x.id!==record.id);render();cloudDelete('atoRefills',record.id)}})};
 }
 
 // ---- Testing ----
 const testTime = r => Date.parse(`${r.date}T${r.time||'12:00'}:00`);
+function testingPanel(meta,rows){return `<div class="panel test-panel"><div class="toolbar toolbar-split"><div><strong>${esc(meta[1])} history</strong><div class="muted subline">${esc(targetLabel(meta))}</div></div><div class="chips">${[['3m','3 Months'],['1y','1 Year'],['3y','3 Years']].map(([r,l])=>`<button class="chip ${r===testRange?'active':''}" data-range="${r}">${l}</button>`).join('')}</div></div>${testChart(rows,meta)}</div>`}
+function testingList(meta,rows){return `<div class="list test-list">${rows.length?rows.map(testRow).join(''):empty(`No ${meta[1].toLowerCase()} readings`,`Add your first ${meta[1].toLowerCase()} measurement.`)}</div>`}
 function renderTesting(){
   const meta=testMeta(testType), rows=data.tests.filter(x=>x.type===testType).sort(byNewest);
   main.innerHTML=`<section class="screen stack">${screenHead('Testing','One measurement at a time.')}
     <div class="chips">${TEST_TYPES.map(([id,label])=>`<button class="chip test-chip chip-${id} ${id===testType?'active':''}" data-test-type="${id}">${esc(label)}</button>`).join('')}</div>
-    <div class="panel"><div class="toolbar toolbar-split"><div><strong>${esc(meta[1])} history</strong><div class="muted subline">${esc(targetLabel(meta))}</div></div><div class="chips">${[['3m','3 Months'],['1y','1 Year'],['3y','3 Years']].map(([r,l])=>`<button class="chip ${r===testRange?'active':''}" data-range="${r}">${l}</button>`).join('')}</div></div>${testChart(rows,meta)}</div>
-    <div class="list">${rows.length?rows.map(testRow).join(''):empty(`No ${meta[1].toLowerCase()} readings`,`Add your first ${meta[1].toLowerCase()} measurement.`)}</div></section>`;
-  main.querySelectorAll('[data-test-type]').forEach(b=>b.onclick=()=>{testType=b.dataset.testType;renderTesting()});main.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{testRange=b.dataset.range;renderTesting()});wireRows();
+    ${testingPanel(meta,rows)}${testingList(meta,rows)}</section>`;
+  wireTesting();
 }
+function wireTesting(){main.querySelectorAll('[data-test-type]').forEach(b=>b.onclick=()=>{testType=b.dataset.testType;updateTesting(b)});main.querySelectorAll('[data-range]').forEach(b=>b.onclick=()=>{testRange=b.dataset.range;updateTesting()});wireRows()}
+// Parameter/range changes update in place: chip colors transition, the chart redraws itself, and the list flows in.
+function updateTesting(chip){const meta=testMeta(testType),rows=data.tests.filter(x=>x.type===testType).sort(byNewest),motion=!reducedMotion.matches;
+  main.querySelectorAll('[data-test-type]').forEach(b=>b.classList.toggle('active',b.dataset.testType===testType));chip?.scrollIntoView({inline:'nearest',block:'nearest',behavior:motion?'smooth':'auto'});
+  animateChart=true;main.querySelector('.test-panel').outerHTML=testingPanel(meta,rows);main.querySelector('.test-list').outerHTML=testingList(meta,rows);animateChart=false;
+  if(motion){main.querySelector('.test-list').classList.add('stagger');staggerChartDots()}openSwipeRow=null;wireTesting()}
 function testChart(rows,meta){const days={'3m':92,'1y':366,'3y':1096}[testRange],end=Date.now(),start=end-days*864e5,points=rows.map(r=>({t:testTime(r),v:r.value,r})).filter(p=>p.t>=start).sort((a,b)=>a.t-b.t);
   if(!points.length)return `<div class="empty empty-inset">No readings in this range.</div>`;
   return timeChart({points,start,end,color:meta[3],unit:meta[2],label:`${meta[1]} chart`,lo:meta[4],hi:meta[5],title:p=>`${fmtWhen(p.r.date,p.r.time)}: ${p.v}${meta[2]?' '+meta[2]:''} · ${targetStatus(p.v,meta)}`})}
@@ -176,9 +206,9 @@ function timeChart({points,start,end,color,unit,label,lo=null,hi=null,floor=null
   const narrow=narrowQuery.matches,w=Math.max(280,Math.round(main.clientWidth-34)),h=narrow?200:240,pad=narrow?14:28;
   const vals=points.map(p=>p.v).concat(lo===null?[]:[lo,hi]),min=floor??Math.min(...vals),max=Math.max(...vals),span=max-min||1,left=pad+Math.ceil(Math.max(`${max}${unit?' '+unit:''}`.length,String(min).length)*6.8)+8;
   const x=t=>left+(t-start)/(end-start||1)*(w-left-pad),y=v=>h-pad-(v-min)/span*(h-2*pad),u=unit?' '+unit:'';
-  const target=lo===null?'':lo===hi?`<line x1="${left}" y1="${y(lo)}" x2="${w-pad}" y2="${y(lo)}" stroke="${color}" stroke-width="2" stroke-dasharray="6 5" opacity=".5"/>`:`<rect x="${left}" y="${Math.min(y(lo),y(hi))}" width="${w-left-pad}" height="${Math.abs(y(lo)-y(hi))}" fill="${color}" opacity=".09"/><line x1="${left}" y1="${y(lo)}" x2="${w-pad}" y2="${y(lo)}" stroke="${color}" opacity=".35"/><line x1="${left}" y1="${y(hi)}" x2="${w-pad}" y2="${y(hi)}" stroke="${color}" opacity=".35"/>`;
+  const target=lo===null?'':lo===hi?`<line class="band" x1="${left}" y1="${y(lo)}" x2="${w-pad}" y2="${y(lo)}" stroke="${color}" stroke-width="2" stroke-dasharray="6 5" opacity=".5"/>`:`<rect class="band" x="${left}" y="${Math.min(y(lo),y(hi))}" width="${w-left-pad}" height="${Math.abs(y(lo)-y(hi))}" fill="${color}" opacity=".09"/><line x1="${left}" y1="${y(lo)}" x2="${w-pad}" y2="${y(lo)}" stroke="${color}" opacity=".35"/><line x1="${left}" y1="${y(hi)}" x2="${w-pad}" y2="${y(hi)}" stroke="${color}" opacity=".35"/>`;
   const fmtDay=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-  return `<svg class="chart" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}"><line class="gridline" x1="${left}" y1="${pad}" x2="${left}" y2="${h-pad}"/><line class="gridline" x1="${left}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}"/>${target}${points.length>1?`<polyline class="series" stroke="${color}" points="${points.map(p=>`${x(p.t)},${y(p.v)}`).join(' ')}"/>`:''}${points.map(p=>`<circle class="dot" cx="${x(p.t)}" cy="${y(p.v)}" r="4" fill="${color}"><title>${esc(title(p))}</title></circle>`).join('')}<text x="${left-6}" y="${pad+4}" text-anchor="end">${max}${esc(u)}</text><text x="${left-6}" y="${h-pad}" text-anchor="end">${min}</text><text x="${left}" y="${h-5}">${esc(fmtDay(start))}</text><text x="${w-pad}" text-anchor="end" y="${h-5}">Today</text></svg>`;
+  return `<svg class="chart${animateChart&&!reducedMotion.matches?' chart-animate':''}" viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(label)}"><line class="gridline" x1="${left}" y1="${pad}" x2="${left}" y2="${h-pad}"/><line class="gridline" x1="${left}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}"/>${target}${points.length>1?`<path class="series" stroke="${color}" pathLength="1" d="M${points.map(p=>`${x(p.t)},${y(p.v)}`).join(' L')}"/>`:''}${points.map(p=>`<circle class="dot" cx="${x(p.t)}" cy="${y(p.v)}" r="4" fill="${color}"><title>${esc(title(p))}</title></circle>`).join('')}<text x="${left-6}" y="${pad+4}" text-anchor="end">${max}${esc(u)}</text><text x="${left-6}" y="${h-pad}" text-anchor="end">${min}</text><text x="${left}" y="${h-5}">${esc(fmtDay(start))}</text><text x="${w-pad}" text-anchor="end" y="${h-5}">Today</text></svg>`;
 }
 function testRow(r){const m=testMeta(r.type);return `<article class="row"><div class="row-copy"><strong>${esc(fmtWhen(r.date,r.time))}</strong><span>${esc(m[1])}</span><small>${esc(targetStatus(r.value,m))}</small></div><div class="row-end"><div class="row-value">${r.value}${m[2]?` <small>${esc(m[2])}</small>`:''}</div>${rowActions('test',r.id)}</div></article>`}
 
@@ -213,13 +243,34 @@ function renderVisual(){const rows=[...data.tankVisual].sort(byNewest);main.inne
 function renderGoals(){const rows=[...data.goals].sort((a,b)=>(a.targetDate||'9999').localeCompare(b.targetDate||'9999')||a.createdAt.localeCompare(b.createdAt));main.innerHTML=`<section class="screen stack">${screenHead('Goals','Future ideas for the tank.')}<div class="list">${rows.length?rows.map(r=>`<article class="row row-media"><div class="row-copy"><strong>${esc(r.title)}</strong>${r.targetDate?`<span>Target ${esc(fmtDate(r.targetDate))}</span>`:''}${r.notes?`<small>${esc(r.notes)}</small>`:''}${photosFor('goal',r.id).length?photoStrip('goal',r.id):''}</div>${rowActions('goal',r.id,'goal')}</article>`).join(''):empty('No goals yet','Add something you want to change, add, or achieve with the tank.')}</div></section>`;wireRows()}
 
 // ---- Photo viewer ----
-function openPhotoViewer(id){const p=data.photos.find(x=>x.id===id);if(!p)return;
-  $('#photoContent').innerHTML=`${closeButton()}<figure class="photo-view"><img src="${esc(fullSrc(p))}" alt="${esc(p.caption||`Photo from ${fmtDate(p.takenDate)}`)}" crossorigin="anonymous"><figcaption><strong>${esc(fmtDate(p.takenDate))}</strong><span class="muted">${esc(photoOwnerLabel(p))}</span>${p.caption?`<span>${esc(p.caption)}</span>`:''}</figcaption></figure><div class="dialog-actions"><button type="button" class="button danger" data-photo-delete>Delete</button>${canShareFiles()?`<button type="button" class="button secondary" data-photo-share>Share</button>`:''}<button type="button" class="button secondary" data-photo-edit>Edit</button></div>`;
-  photoDialog.querySelector('[data-close]').onclick=()=>dismiss(photoDialog);photoDialog.querySelector('[data-photo-edit]').onclick=()=>{photoDialog.close();openEditor('photo',p)};photoDialog.querySelector('[data-photo-delete]').onclick=()=>{dismiss(photoDialog);deleteItem('photo',p.id)};
+async function openPhotoViewer(id){const p=data.photos.find(x=>x.id===id);if(!p)return;photoDialog.dataset.photoId=p.id;
+  $('#photoContent').innerHTML=`${closeButton()}<figure class="photo-view"><div class="photo-frame"><img class="fade-img" src="${esc(fullSrc(p))}" alt="${esc(p.caption||`Photo from ${fmtDate(p.takenDate)}`)}" crossorigin="anonymous"></div><figcaption><strong>${esc(fmtDate(p.takenDate))}</strong><span class="muted">${esc(photoOwnerLabel(p))}</span>${p.caption?`<span>${esc(p.caption)}</span>`:''}</figcaption></figure><div class="dialog-actions"><button type="button" class="button danger" data-photo-delete>Delete</button>${canShareFiles()?`<button type="button" class="button secondary" data-photo-share>Share</button>`:''}<button type="button" class="button secondary" data-photo-edit>Edit</button></div>`;
+  photoDialog.querySelector('[data-close]').onclick=closePhotoViewer;photoDialog.querySelector('[data-photo-edit]').onclick=()=>{photoDialog.close();openEditor('photo',p)};photoDialog.querySelector('[data-photo-delete]').onclick=()=>{dismiss(photoDialog);deleteItem('photo',p.id)};
   // Fetch the shareable JPEG up front: iOS only opens the share sheet straight from a tap, so it can't wait on a download.
   const share=photoDialog.querySelector('[data-photo-share]');if(share){const file=fetch(photoSize(p.url,'q_auto,f_jpg')).then(r=>r.ok?r.blob():Promise.reject()).then(b=>new File([b],`coraldar-${p.takenDate}.jpg`,{type:'image/jpeg'})).catch(()=>null);let ready=null;file.then(f=>ready=f);
     share.onclick=async()=>{const f=ready||await file;if(!f)return toast('That photo couldn’t be shared. Long-press it to save instead.');try{await navigator.share({files:[f]})}catch(err){if(err.name!=='AbortError')toast('That photo couldn’t be shared. Long-press it to save instead.')}}}
+  const img=photoDialog.querySelector('.photo-view img'),thumb=main.querySelector(`[data-photo="${CSS.escape(p.id)}"] img.fade-img`);enablePinch(img);markLoadedImages(photoDialog);
+  // Grow the photo out of its thumbnail (View Transitions); waits briefly for the full image so the morph lands on it.
+  if(document.startViewTransition&&thumb&&inViewport(thumb)&&!reducedMotion.matches&&await Promise.race([decodeImage(fullSrc(p)),new Promise(r=>setTimeout(()=>r(false),350))])){
+    img.classList.add('loaded');thumb.style.viewTransitionName='photo-hero';photoDialog.classList.add('vt');
+    const t=document.startViewTransition(()=>{thumb.style.viewTransitionName='';img.style.viewTransitionName='photo-hero';photoDialog.showModal()});t.finished.finally(()=>{img.style.viewTransitionName='';photoDialog.classList.remove('vt')});return}
   photoDialog.showModal()}
+const inViewport = el => {const r=el.getBoundingClientRect();return r.bottom>0&&r.top<innerHeight&&r.width>0};
+const decodeImage = src => {const i=new Image();i.crossOrigin='anonymous';i.src=src;return i.decode().then(()=>true,()=>false)};
+function closePhotoViewer(){const img=photoDialog.querySelector('.photo-view img'),thumb=main.querySelector(`[data-photo="${CSS.escape(photoDialog.dataset.photoId||'')}"] img.fade-img`);
+  if(document.startViewTransition&&img&&thumb&&inViewport(thumb)&&!img.classList.contains('zoomed')&&!reducedMotion.matches){img.style.viewTransitionName='photo-hero';photoDialog.classList.add('vt');
+    const t=document.startViewTransition(()=>{img.style.viewTransitionName='';photoDialog.close();thumb.style.viewTransitionName='photo-hero'});t.finished.finally(()=>{thumb.style.viewTransitionName='';photoDialog.classList.remove('vt')});return}
+  dismiss(photoDialog)}
+// Pinch to zoom, drag to pan while zoomed, double-tap to toggle zoom.
+function enablePinch(img){let scale=1,tx=0,ty=0,start=null,lastTap=0;
+  const clamp=()=>{const lim=(scale-1)/2;tx=Math.max(-img.offsetWidth*lim,Math.min(img.offsetWidth*lim,tx));ty=Math.max(-img.offsetHeight*lim,Math.min(img.offsetHeight*lim,ty))};
+  const apply=(animate=false)=>{img.style.transition=animate?'transform .25s cubic-bezier(.2,.8,.2,1)':'none';img.style.transform=scale>1?`translate(${tx}px,${ty}px) scale(${scale})`:'';img.classList.toggle('zoomed',scale>1.01)};
+  const gap=(a,b)=>Math.hypot(a.clientX-b.clientX,a.clientY-b.clientY);
+  img.addEventListener('touchstart',e=>{const t=e.touches;if(t.length===2)start={dist:gap(t[0],t[1]),scale,tx,ty,cx:(t[0].clientX+t[1].clientX)/2,cy:(t[0].clientY+t[1].clientY)/2};else if(t.length===1){start=scale>1?{pan:true,x:t[0].clientX,y:t[0].clientY,tx,ty}:null;
+    if(e.timeStamp-lastTap<300){scale=scale>1?1:2.5;tx=ty=0;apply(true);lastTap=0}else lastTap=e.timeStamp}},{passive:true});
+  img.addEventListener('touchmove',e=>{if(!start)return;const t=e.touches;if(start.dist&&t.length===2){scale=Math.min(4,Math.max(1,start.scale*gap(t[0],t[1])/start.dist));tx=start.tx+(t[0].clientX+t[1].clientX)/2-start.cx;ty=start.ty+(t[0].clientY+t[1].clientY)/2-start.cy}else if(start.pan&&t.length===1){tx=start.tx+t[0].clientX-start.x;ty=start.ty+t[0].clientY-start.y}else return;clamp();apply();e.preventDefault()},{passive:false});
+  img.addEventListener('touchend',e=>{if(e.touches.length)return;start=null;if(scale<1.05){scale=1;tx=ty=0;apply(true)}})}
+
 
 // ---- Editor ----
 function closeButton(){return `<button type="button" class="icon-button dialog-close" data-close aria-label="Close">${icon(ICONS.close)}</button>`}
@@ -266,19 +317,23 @@ editorForm.onsubmit=async e=>{e.preventDefault();const fd=new FormData(editorFor
   // Each photo keeps its own file date unless "Date taken" was set by hand, which then applies to all of them.
   const photoDate=f=>dateField?.dataset.touched||fileDate(f)>today()?fieldDate:fileDate(f);
   // Photos upload first (the dialog stays open meanwhile), so a failed upload never leaves a half-saved entry; a retry skips ones already uploaded.
-  const uploaded=editorForm._uploaded;if(files.length>uploaded.length){const submit=editorForm.querySelector('[type=submit]'),hint=editorForm.querySelector('.dialog-hint');submit.disabled=true;
+  const uploaded=editorForm._uploaded,submit=editorForm.querySelector('[type=submit]');if(files.length>uploaded.length){const hint=editorForm.querySelector('.dialog-hint');submit.disabled=true;submit.classList.add('busy');
     try{for(let i=uploaded.length;i<files.length;i++){hint.textContent=files.length>1?`Uploading photo ${i+1} of ${files.length}…`:'Uploading photo…';uploaded.push({...await uploadPhoto(files[i]),takenDate:photoDate(files[i])})}}
-    catch(err){console.error(err);hint.textContent=(uploaded.length?`Uploaded ${uploaded.length} of ${files.length}. `:'')+(photoErrors[err.message]||photoErrors['upload-failed']);submit.disabled=false;return}}
+    catch(err){console.error(err);hint.textContent=(uploaded.length?`Uploaded ${uploaded.length} of ${files.length}. `:'')+(photoErrors[err.message]||photoErrors['upload-failed']);submit.disabled=false;submit.classList.remove('busy');return}
+    hint.textContent='';submit.classList.replace('busy','success');if(!reducedMotion.matches)await new Promise(r=>setTimeout(r,420))}
   if(record){upsertLocal(collection,record);
     // Saving a coral rewrites its doc without embedded notes, so carry any not-yet-migrated notes along in the same batch.
     const carried=kind==='coral'?legacyCoralNotes.filter(n=>n.coralId===record.id):[];if(carried.length)commitOps([...carried.map(n=>['set','coralNotes',n]),['set','corals',record]]).catch(syncError);else cloudSet(collection,record)}
   const owner=kind==='photo'?ctx.owner:'visual',ownerId=kind==='photo'?ctx.ownerId:record?.id;
   const photos=uploaded.map(u=>({id:uid(),owner,ownerId,...u,caption:kind==='photo'?caption:'',createdAt:now}));photos.forEach(ph=>upsertLocal('photos',ph));if(photos.length)commitOps(photos.map(ph=>['set','photos',ph])).catch(syncError);
-  pendingFiles=[];editorForm._uploaded=[];dismiss(editorDialog);render();toast(photos.length>1?`${photos.length} photos saved`:photos.length?'Photo saved':'Saved');
+  highlightId=photos[0]?.id&&kind!=='visual'?photos[0].id:record?.id||'';pendingFiles=[];editorForm._uploaded=[];dismiss(editorDialog);render();toast(photos.length>1?`${photos.length} photos saved`:photos.length?'Photo saved':'Saved');
 };
 function upsertLocal(collection,record){const a=data[collection],i=a.findIndex(x=>x.id===record.id);if(i>=0)a[i]=record;else a.push(record)}
 // Delete immediately (with related notes/entries/photos) and offer Undo, which writes everything back.
-function deleteItem(kind,id){const collection=KIND_COLLECTION[kind],item=findKind(kind,id);if(!collection||!item)return;
+function deleteItem(kind,id){const el=findRendered(id);if(!el||reducedMotion.matches||!findKind(kind,id))return performDelete(kind,id);
+  // Collapse the row/photo smoothly, then remove it.
+  el.style.height=`${el.offsetHeight}px`;if(el.classList.contains('photo-thumb'))el.style.width=`${el.offsetWidth}px`;void el.offsetHeight;el.classList.add('collapsing');setTimeout(()=>performDelete(kind,id),210)}
+function performDelete(kind,id){const collection=KIND_COLLECTION[kind],item=findKind(kind,id);if(!collection||!item)return;
   const related=[];if(kind==='fish')related.push(...data.fishEntries.filter(e=>e.fish===id).map(e=>['fishEntries',e]));if(kind==='coral')related.push(...notesFor(id).map(n=>['coralNotes',n]));
   const photoOwner={fish:'fish',coral:'coral',visual:'visual',goal:'goal'}[kind];if(photoOwner)related.push(...photosFor(photoOwner,id).map(p=>['photos',p]));
   const all=[[collection,item],...related];
@@ -290,18 +345,18 @@ function deleteItem(kind,id){const collection=KIND_COLLECTION[kind],item=findKin
   if(kind==='fish'&&fishTab===id){fishTab='';fishDetailOpen=false}if(kind==='coral'&&coralTab===id){coralTab='';coralDetailOpen=false}
   render();commitOps(ops).catch(syncError);
   const label=kind==='fish'||kind==='coral'?`${item.name} deleted`:kind==='photo'?'Photo deleted':kind==='coralNote'?'Note deleted':'Entry deleted';
-  toast(label,{label:'Undo',run:()=>{for(const [c,r] of all)upsertLocal(c,r);if(kind==='fish'){fishTab=id}if(kind==='coral'){coralTab=id}render();commitOps(all.map(([c,r])=>['set',c,r])).catch(syncError)}})}
+  toast(label,{label:'Undo',run:()=>{for(const [c,r] of all)upsertLocal(c,r);if(kind==='fish'){fishTab=id}if(kind==='coral'){coralTab=id}highlightId=id;render();commitOps(all.map(([c,r])=>['set',c,r])).catch(syncError)}})}
 function wireAutoGrow(root){root.querySelectorAll('textarea').forEach(t=>{const grow=()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,600)+'px';t.style.overflowY=t.scrollHeight>600?'auto':'hidden'};t.addEventListener('input',grow);grow()})}
 // Only treat it as an outside tap if the press also started outside (a text selection dragged past the edge shouldn't close).
 let pressStartedOutside=false;document.addEventListener('pointerdown',e=>{pressStartedOutside=e.target===editorDialog||e.target===settingsDialog||e.target===photoDialog},true);
 editorDialog.addEventListener('click',e=>{if(e.target===editorDialog&&pressStartedOutside&&guardEditorClose())dismiss(editorDialog)});editorDialog.addEventListener('cancel',e=>{if(!guardEditorClose())e.preventDefault()});
-settingsDialog.addEventListener('click',e=>{if(e.target===settingsDialog&&pressStartedOutside)dismiss(settingsDialog)});photoDialog.addEventListener('click',e=>{if(e.target===photoDialog&&pressStartedOutside)dismiss(photoDialog)});
-editorDialog.addEventListener('close',()=>{editorForm.querySelectorAll('.photo-preview img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src)});pendingFiles=[];scheduleRender()});settingsDialog.addEventListener('close',scheduleRender);
+settingsDialog.addEventListener('click',e=>{if(e.target===settingsDialog&&pressStartedOutside)dismiss(settingsDialog)});photoDialog.addEventListener('click',e=>{if(e.target===photoDialog&&pressStartedOutside)closePhotoViewer()});
+editorDialog.addEventListener('close',()=>{editorForm.querySelectorAll('.photo-preview img').forEach(img=>{if(img.src.startsWith('blob:'))URL.revokeObjectURL(img.src)});pendingFiles=[];renderIfSkipped()});settingsDialog.addEventListener('close',renderIfSkipped);
 
-function toast(msg,action=null){clearTimeout(toastTimer);const el=$('#toast');el.textContent=msg;if(action){const b=document.createElement('button');b.type='button';b.className='toast-action';b.textContent=action.label;b.onclick=()=>{clearTimeout(toastTimer);el.classList.remove('show');action.run()};el.append(b)}el.classList.add('show');toastTimer=setTimeout(()=>el.classList.remove('show'),action?7000:2400)}
+function toast(msg,action=null){clearTimeout(toastTimer);const el=$('#toast');el.textContent=msg;if(action){const b=document.createElement('button');b.type='button';b.className='toast-action';b.textContent=action.label;b.onclick=()=>{clearTimeout(toastTimer);el.classList.remove('show');action.run()};el.append(b)}el.classList.remove('countdown');if(action){void el.offsetWidth;el.classList.add('countdown')}el.classList.add('show');toastTimer=setTimeout(()=>el.classList.remove('show'),action?7000:2400)}
 
 $('#moreButton').onclick=openSettings;
-function openSettings(){$('#settingsContent').innerHTML=`${closeButton()}<h2>Settings</h2><section class="settings-section"><h3>Tank</h3><p>Volume: ${TANK_GALLONS} gallons</p></section><section class="settings-section"><h3>Backup & restore</h3><p>Download a copy of all your CoralDar data, or restore from one. Restoring replaces what’s in the app now. Photos stay in Cloudinary; the backup keeps their links.</p><div class="toolbar"><button class="button secondary" id="backupButton">Download backup</button><button class="button secondary" id="restoreButton">Restore backup</button><input id="restoreFile" type="file" accept="application/json,.json" hidden></div><p id="backupStatus" class="settings-status" role="status"></p></section><section class="settings-section"><h3>Account</h3><p id="syncText">${syncLabel()}</p><button class="button secondary" id="signOutButton">Sign out</button><p>CoralDar release ${RELEASE}</p></section>`;settingsDialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dismiss(settingsDialog));$('#backupButton').onclick=downloadBackup;$('#restoreButton').onclick=()=>$('#restoreFile').click();$('#restoreFile').onchange=restoreBackup;$('#signOutButton').onclick=signOutUser;settingsDialog.showModal()}
+function openSettings(){$('#settingsContent').innerHTML=`${closeButton()}<h2>Settings</h2><section class="settings-section"><h3>Tank</h3><p>Volume: ${TANK_GALLONS} gallons</p></section><section class="settings-section"><h3>Appearance</h3><label class="setting-toggle"><span>Water shimmer on the Home photo<small>A slow ripple of light across the tank photo. Saved on this device.</small></span><input type="checkbox" switch id="shimmerToggle" ${shimmerOn()?'checked':''}></label></section><section class="settings-section"><h3>Backup & restore</h3><p>Download a copy of all your CoralDar data, or restore from one. Restoring replaces what’s in the app now. Photos stay in Cloudinary; the backup keeps their links.</p><div class="toolbar"><button class="button secondary" id="backupButton">Download backup</button><button class="button secondary" id="restoreButton">Restore backup</button><input id="restoreFile" type="file" accept="application/json,.json" hidden></div><p id="backupStatus" class="settings-status" role="status"></p></section><section class="settings-section"><h3>Account</h3><p id="syncText">${syncLabel()}</p><button class="button secondary" id="signOutButton">Sign out</button><p>CoralDar release ${RELEASE}</p></section>`;settingsDialog.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>dismiss(settingsDialog));$('#shimmerToggle').onchange=e=>{try{localStorage.setItem(SHIMMER_KEY,e.target.checked?'on':'off')}catch{}renderSkipped=true};$('#backupButton').onclick=downloadBackup;$('#restoreButton').onclick=()=>$('#restoreFile').click();$('#restoreFile').onchange=restoreBackup;$('#signOutButton').onclick=signOutUser;settingsDialog.showModal()}
 function bytesToB64(bytes){let s='';bytes.forEach(b=>s+=String.fromCharCode(b));return btoa(s)}
 function b64ToBytes(s){return Uint8Array.from(atob(s),c=>c.charCodeAt(0))}
 async function deriveKey(password,salt){const material=await crypto.subtle.importKey('raw',new TextEncoder().encode(password),'PBKDF2',false,['deriveKey']);return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:180000,hash:'SHA-256'},material,{name:'AES-GCM',length:256},false,['encrypt','decrypt'])}
@@ -328,12 +383,13 @@ function cloudSet(collection,record){if(canSync())firebase.setDoc(firebase.doc(f
 function cloudDelete(collection,id){if(canSync())firebase.deleteDoc(firebase.doc(firebase.db,...firebasePath(collection),id)).catch(syncError)}
 async function commitOps(ops){if(!canSync()||!ops.length)return;const commits=[];for(let i=0;i<ops.length;i+=200){const batch=firebase.writeBatch(firebase.db);for(const [op,c,v] of ops.slice(i,i+200)){const ref=firebase.doc(firebase.db,...firebasePath(c),op==='set'?v.id:v);op==='set'?batch.set(ref,v):batch.delete(ref)}commits.push(batch.commit())}await Promise.all(commits)}
 function syncLabel(){return !currentUser?'Not signed in':Object.values(pendingSync).some(Boolean)?'Changes waiting to sync — they will upload when you are back online.':'All changes synced'}
-function scheduleRender(){if(renderQueued)return;renderQueued=true;requestAnimationFrame(()=>{renderQueued=false;const sync=$('#syncText');if(sync)sync.textContent=syncLabel();if(currentUser&&!editorDialog.open&&!settingsDialog.open)render()})}
+function scheduleRender(){if(renderQueued)return;renderQueued=true;requestAnimationFrame(()=>{renderQueued=false;if(Date.now()<renderHoldUntil)return void setTimeout(scheduleRender,renderHoldUntil-Date.now()+30);const sync=$('#syncText');if(sync)sync.textContent=syncLabel();if(currentUser&&!editorDialog.open&&!settingsDialog.open)render();else renderSkipped=true})}
+function renderIfSkipped(){if(renderSkipped){renderSkipped=false;scheduleRender()}}
 function stopSnapshots(){unsubscribers.forEach(fn=>fn());unsubscribers=[]}
-function startSnapshots(){stopSnapshots();const awaitingServer=new Set(COLLECTIONS);for(const collection of COLLECTIONS){let loaded=false;const unsub=firebase.onSnapshot(firebase.collection(firebase.db,...firebasePath(collection)),{includeMetadataChanges:true},snap=>{
+function startSnapshots(){stopSnapshots();const awaitingServer=new Set(COLLECTIONS),awaitingFirst=new Set(COLLECTIONS);for(const collection of COLLECTIONS){let loaded=false;const unsub=firebase.onSnapshot(firebase.collection(firebase.db,...firebasePath(collection)),{includeMetadataChanges:true},snap=>{
     // Metadata-only events (pending-write / cache flags) don't change documents, so skip re-normalizing.
     if(!loaded||snap.docChanges().length){loaded=true;const remote=snap.docs.map(d=>({...d.data(),id:d.id})),normalized=normalizeData({[collection]:remote});data[collection]=normalized[collection];if(collection==='corals')legacyCoralNotes=normalized.coralNotes}
-    pendingSync[collection]=snap.metadata.hasPendingWrites;if(!snap.metadata.fromCache&&awaitingServer.delete(collection)&&!awaitingServer.size){migrateEmbeddedCoralNotes();migrateLegacyLocal();seedFish()}scheduleRender()},err=>console.error('snapshot',collection,err));unsubscribers.push(unsub)}}
+    pendingSync[collection]=snap.metadata.hasPendingWrites;if(awaitingFirst.delete(collection)&&!awaitingFirst.size)nextAnim=nextAnim||'fade';if(!snap.metadata.fromCache&&awaitingServer.delete(collection)&&!awaitingServer.size){migrateEmbeddedCoralNotes();migrateLegacyLocal();seedFish()}scheduleRender()},err=>console.error('snapshot',collection,err));unsubscribers.push(unsub)}}
 // One-time creation of the starting fish list once the server copy has loaded (so it never duplicates across devices).
 function seedFish(){if(data.meta.find(m=>m.id==='app')?.fishSeeded)return;const have=new Set(data.fish.map(f=>f.id)),base=Date.parse('2026-01-01T00:00:00Z');const ops=DEFAULT_FISH.filter(([id])=>!have.has(id)).map(([id,name],i)=>['set','fish',{id,name,createdAt:new Date(base+i*1000).toISOString()}]);ops.push(['set','meta',{id:'app',fishSeeded:true}]);for(const [,c,r] of ops)upsertLocal(c,r);scheduleRender();commitOps(ops).catch(syncError)}
 // One-time move of notes embedded in coral documents into the coralNotes collection (keeps coral docs small).
@@ -390,14 +446,16 @@ $('#signInButton').onclick=async()=>{if(!firebase)return;const button=$('#signIn
 };$('#authStatus').textContent=messages[code]||'Sign-in didn’t finish. Please try again.'}finally{button.disabled=false}};
 async function signOutUser(){settingsDialog.close();if(firebase)await firebase.signOut(firebase.auth);else clearPrivateLocal()}
 
+const topHeader=$('.top-header');addEventListener('scroll',()=>topHeader.classList.toggle('scrolled',scrollY>4),{passive:true});
+
 // ---- Native-feel gestures ----
 // Sheets animate away on phones; everywhere else (and with reduced motion) they just close.
 function dismiss(dialog){if(!dialog.open||dialog.classList.contains('sheet-closing'))return;if(!narrowQuery.matches||reducedMotion.matches)return dialog.close();dialog.classList.add('sheet-closing');
   const done=()=>{if(!dialog.classList.contains('sheet-closing'))return;dialog.classList.remove('sheet-closing');dialog.style.removeProperty('--drag');dialog.close()};dialog.addEventListener('animationend',done,{once:true});setTimeout(done,400)}
 // Drag a sheet down by its top edge (or from anywhere once its content is scrolled to the top) to dismiss it.
 function enableSheetDrag(dialog){let startY=0,startT=0,dy=0,state='';
-  dialog.addEventListener('touchstart',e=>{state='';if(!narrowQuery.matches||e.touches.length!==1||e.target.closest('input,textarea,select,.photo-strip,.photo-preview'))return;const inner=dialog.querySelector('.dialog-inner'),y=e.touches[0].clientY;if(y-dialog.getBoundingClientRect().top>48&&inner.scrollTop>0)return;startY=y;startT=e.timeStamp;dy=0;state='maybe'},{passive:true});
-  dialog.addEventListener('touchmove',e=>{if(!state)return;const d=e.touches[0].clientY-startY;if(state==='maybe'){if(Math.abs(d)<6)return;if(d<0){state='';return}state='drag';dialog.classList.add('sheet-dragging')}dy=Math.max(0,d);dialog.style.setProperty('--drag',`${dy}px`);e.preventDefault()},{passive:false});
+  dialog.addEventListener('touchstart',e=>{state='';if(!narrowQuery.matches||e.touches.length!==1||e.target.closest('input,textarea,select,.photo-strip,.photo-preview,.photo-view img.zoomed'))return;const inner=dialog.querySelector('.dialog-inner'),y=e.touches[0].clientY;if(y-dialog.getBoundingClientRect().top>48&&inner.scrollTop>0)return;startY=y;startT=e.timeStamp;dy=0;state='maybe'},{passive:true});
+  dialog.addEventListener('touchmove',e=>{if(!state)return;if(e.touches.length>1){if(state==='drag'){dialog.classList.remove('sheet-dragging');dialog.style.setProperty('--drag','0px')}state='';return}const d=e.touches[0].clientY-startY;if(state==='maybe'){if(Math.abs(d)<6)return;if(d<0){state='';return}state='drag';dialog.classList.add('sheet-dragging')}dy=Math.max(0,d);dialog.style.setProperty('--drag',`${dy}px`);e.preventDefault()},{passive:false});
   dialog.addEventListener('touchend',e=>{if(state!=='drag'){state='';return}state='';dialog.classList.remove('sheet-dragging');const fast=dy/Math.max(1,e.timeStamp-startT)>.6,far=dy>Math.min(160,dialog.offsetHeight*.3);
     if((fast||far)&&(dialog!==editorDialog||guardEditorClose()))dismiss(dialog);else dialog.style.setProperty('--drag','0px')});
   dialog.addEventListener('touchcancel',()=>{if(state==='drag'){dialog.classList.remove('sheet-dragging');dialog.style.setProperty('--drag','0px')}state=''})}
