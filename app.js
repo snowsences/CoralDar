@@ -1,6 +1,6 @@
 'use strict';
 
-const RELEASE = 12;
+const RELEASE = 13;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
@@ -135,6 +135,7 @@ primaryAction.onclick=()=>{
   openEditor({water:'water',dosing:'dose',visual:'visual',goals:'goal'}[activeTab]||'test');
 };
 narrowQuery.addEventListener('change',()=>{if(currentUser)render()});
+let lastWidth=innerWidth,resizeTimer;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{if(innerWidth===lastWidth)return;lastWidth=innerWidth;if(currentUser&&['testing','water'].includes(activeTab)&&!document.querySelector('dialog[open]'))render()},150)});
 function screenHead(title,sub=''){return `<div class="screen-head"><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div></div>`}
 function empty(title,copy){return `<div class="empty"><h3>${esc(title)}</h3><div>${esc(copy)}</div></div>`}
 function rowActions(kind,id,photoOwner=''){return `<div class="row-actions">${photoOwner?`<button class="row-action" data-add-photo="${photoOwner}" data-owner-id="${esc(id)}" aria-label="Add photo">${icon(ICONS.camera)}</button>`:''}<button class="row-action" data-edit="${kind}" data-id="${esc(id)}" aria-label="Edit">${icon(ICONS.edit)}</button><button class="row-action" data-delete="${kind}" data-id="${esc(id)}" aria-label="Delete">${icon(ICONS.close)}</button></div>`}
@@ -171,7 +172,9 @@ function testChart(rows,meta){const days={'3m':92,'1y':366,'3y':1096}[testRange]
   return timeChart({points,start,end,color:meta[3],unit:meta[2],label:`${meta[1]} chart`,lo:meta[4],hi:meta[5],title:p=>`${fmtWhen(p.r.date,p.r.time)}: ${p.v}${meta[2]?' '+meta[2]:''} · ${targetStatus(p.v,meta)}`})}
 // Points are placed by their date/time across the whole range, so gaps between readings show as gaps.
 function timeChart({points,start,end,color,unit,label,lo=null,hi=null,floor=null,title}){
-  const w=760,h=220,pad=28,left=pad+22,vals=points.map(p=>p.v).concat(lo===null?[]:[lo,hi]),min=floor??Math.min(...vals),max=Math.max(...vals),span=max-min||1;
+  // Drawn at the panel's real width (not scaled down from a fixed size) so labels stay 12px and the chart fills its box.
+  const narrow=narrowQuery.matches,w=Math.max(280,Math.round(main.clientWidth-34)),h=narrow?200:240,pad=narrow?14:28;
+  const vals=points.map(p=>p.v).concat(lo===null?[]:[lo,hi]),min=floor??Math.min(...vals),max=Math.max(...vals),span=max-min||1,left=pad+Math.ceil(Math.max(`${max}${unit?' '+unit:''}`.length,String(min).length)*6.8)+8;
   const x=t=>left+(t-start)/(end-start||1)*(w-left-pad),y=v=>h-pad-(v-min)/span*(h-2*pad),u=unit?' '+unit:'';
   const target=lo===null?'':lo===hi?`<line x1="${left}" y1="${y(lo)}" x2="${w-pad}" y2="${y(lo)}" stroke="${color}" stroke-width="2" stroke-dasharray="6 5" opacity=".5"/>`:`<rect x="${left}" y="${Math.min(y(lo),y(hi))}" width="${w-left-pad}" height="${Math.abs(y(lo)-y(hi))}" fill="${color}" opacity=".09"/><line x1="${left}" y1="${y(lo)}" x2="${w-pad}" y2="${y(lo)}" stroke="${color}" opacity=".35"/><line x1="${left}" y1="${y(hi)}" x2="${w-pad}" y2="${y(hi)}" stroke="${color}" opacity=".35"/>`;
   const fmtDay=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
