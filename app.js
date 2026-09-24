@@ -1,6 +1,6 @@
 'use strict';
 
-const RELEASE = 14;
+const RELEASE = 15;
 const TANK_GALLONS = 32;
 const OWNER_UID = 'zZQ1UmFVKyMjmu4PvhVIoaqwPU93';
 const FIREBASE_CONFIG = {apiKey:'AIzaSyBJWUH4WUZ5viWuj5XgXhDgSpdsneNhFUQ',authDomain:'coraldar-d348f.firebaseapp.com',projectId:'coraldar-d348f',storageBucket:'coraldar-d348f.firebasestorage.app',messagingSenderId:'111139321454',appId:'1:111139321454:web:2d4a1d61aec5a110c2987f'};
@@ -11,7 +11,7 @@ const SHIMMER_KEY = 'coraldar-shimmer'; // per-device preference for the Home ph
 const STORAGE_KEY = 'coraldar-v1'; // legacy local mirror; migrated to Firestore's offline cache on sign-in
 const BACKUP_FORMAT = 'coraldar-backup';
 const LEGACY_ENCRYPTED_FORMAT = 'coraldar-encrypted-backup'; // older password-protected backups; still restorable
-const COLLECTIONS = ['tests','waterChanges','doses','fish','fishEntries','corals','coralNotes','tankVisual','goals','photos','atoRefills','meta'];
+const COLLECTIONS = ['tests','waterChanges','doses','fish','fishEntries','feedings','corals','coralNotes','tankVisual','goals','photos','atoRefills','meta'];
 // [key, label, unit, chart color, target low, target high] — targets are intentionally fixed.
 const TEST_TYPES = [
   ['temperature','Temperature','°F','#ef5f59',78,81],['salinity','Salinity','SG','#5b9cf0',1.025,1.026],['ph','pH','','#44c9c0',7.8,8.4],
@@ -29,11 +29,13 @@ const ICONS = {
   bubbles:'M9 17.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM16.5 10a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM16 19.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z'
 };
 const NAV = [
-  ['home','Home','M3 11.5 12 4l9 7.5M5.5 9.5V20h13V9.5M10 20v-5h4v5'],['testing','Testing','M4 19V5m0 7h16M8 5v14M12 8v8M16 6v12'],
-  ['water','Water Δ','M12 3s6 6.2 6 11a6 6 0 0 1-12 0c0-4.8 6-11 6-11Z','Water changes'],['dosing','Dosing','M9 3h6M10 3v5l-4 7a4 4 0 0 0 3.5 6h5a4 4 0 0 0 3.5-6l-4-7V3M8 15h8'],
-  ['fish','Fish',ICONS.fish],['coral','Coral',ICONS.coral],['visual','Tank Visual','M3 5h18v14H3zM7 15l3-3 3 3 2-2 3 3M8 9h.01'],['goals','Goals','M12 3v18M5 7h7M5 7l3-3M5 7l3 3M19 17h-7M19 17l-3-3M19 17l-3 3']
+  ['home','Home','M3 11.5 12 4l9 7.5M5.5 9.5V20h13V9.5M10 20v-5h4v5'],
+  ['feed','Feed','M3 14c1.4 -2.4 3.6 -2.4 5 0s3.6 2.4 5 0 3.6 -2.4 5 0 3.6 2.4 5 0M7 5h.01M12 3.4h.01M17 5h.01'],
+  ['testing','Testing','M4 19V5m0 7h16M8 5v14M12 8v8M16 6v12'],
+  ['water','Water','M12 3s6 6.2 6 11a6 6 0 0 1-12 0c0-4.8 6-11 6-11Z','Water changes'],['dosing','Dosing','M9 3h6M10 3v5l-4 7a4 4 0 0 0 3.5 6h5a4 4 0 0 0 3.5-6l-4-7V3M8 15h8'],
+  ['fish','Fish',ICONS.fish],['coral','Coral',ICONS.coral],['visual','Tank Visual','M3 5h18v14H3zM7 15l3-3 3 3 2-2 3 3M8 9h.01']
 ];
-const KIND_COLLECTION = {test:'tests',water:'waterChanges',dose:'doses',fish:'fish',fishEntry:'fishEntries',coral:'corals',coralNote:'coralNotes',visual:'tankVisual',goal:'goals',photo:'photos',ato:'atoRefills'};
+const KIND_COLLECTION = {test:'tests',water:'waterChanges',dose:'doses',feed:'feedings',fish:'fish',fishEntry:'fishEntries',coral:'corals',coralNote:'coralNotes',visual:'tankVisual',goal:'goals',photo:'photos',ato:'atoRefills'};
 
 const $ = s => document.querySelector(s);
 const main = $('#main'), nav = $('#mainNav'), primaryAction = $('#primaryAction'), editorDialog = $('#editorDialog'), editorForm = $('#editorForm'), settingsDialog = $('#settingsDialog'), photoDialog = $('#photoDialog');
@@ -42,10 +44,10 @@ const narrowQuery = matchMedia('(max-width:680px)'), reducedMotion = matchMedia(
 const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
 let data = emptyData();
 let activeTab = 'home';
-let testType = 'temperature', testRange = '3m', fishTab = '', coralTab = '', fishDetailOpen = false, coralDetailOpen = false;
+let testType = 'temperature', testRange = '3m', fishTab = '', coralTab = '', fishDetailOpen = false, coralDetailOpen = false, heroPhotos = [], heroIndex = 0, heroTimer = null;
 let firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, editorSnapshot = '', authNotice = '', cacheReady = Promise.resolve(), pendingSync = {}, legacyCoralNotes = [], pendingFiles = [], nextAnim = '', animateChart = false, highlightId = '', highlight = null, renderHoldUntil = 0, renderSkipped = false;
 
-function emptyData(){ return {tests:[],waterChanges:[],doses:[],fish:[],fishEntries:[],corals:[],coralNotes:[],tankVisual:[],goals:[],photos:[],atoRefills:[],meta:[]}; }
+function emptyData(){ return {tests:[],waterChanges:[],doses:[],fish:[],fishEntries:[],feedings:[],corals:[],coralNotes:[],tankVisual:[],goals:[],photos:[],atoRefills:[],meta:[]}; }
 function readLegacyLocal(){ try{const raw=localStorage.getItem(STORAGE_KEY);return raw?normalizeData(JSON.parse(raw)):null}catch{return null} }
 function clearPrivateLocal(){ localStorage.removeItem(STORAGE_KEY); data=emptyData(); pendingSync={}; legacyCoralNotes=[]; }
 const esc = value => String(value??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
@@ -82,6 +84,7 @@ function normalizeData(raw){
   base.waterChanges=list('waterChanges',5000).map(v=>({id:safeId(v.id),gallons:finite(v.gallons,0,TANK_GALLONS*3),date:safeDate(v.date)||today(),notes:safeText(v.notes,1000),createdAt:created(v)}));
   base.doses=list('doses',10000).map(v=>({id:safeId(v.id),additive:safeText(v.additive,120),amount:safeText(v.amount,80),date:safeDate(v.date)||today(),time:safeTime(v.time),notes:safeText(v.notes,1000),createdAt:created(v)})).filter(v=>v.additive);
   base.fish=list('fish',500).map(v=>({id:safeId(v.id),name:safeText(v.name,80),createdAt:created(v)})).filter(v=>v.name);
+  base.feedings=list('feedings',10000).map(v=>({id:safeId(v.id),food:safeText(v.food,120),date:safeDate(v.date)||today(),time:safeTime(v.time),notes:safeText(v.notes,500),createdAt:created(v)})).filter(v=>v.food);
   base.fishEntries=list('fishEntries',10000).map(v=>({id:safeId(v.id),fish:ID_PATTERN.test(String(v.fish||''))?String(v.fish):'',kind:['feeding','behavior'].includes(v.kind)?v.kind:'behavior',date:safeDate(v.date)||today(),time:safeTime(v.time),text:safeText(v.text,2000),photos:safePhotos(v.photos,20),createdAt:created(v)})).filter(v=>v.text&&v.fish);
   const rawCorals=list('corals',1000).map(v=>({...v,id:safeId(v.id)}));
   base.corals=rawCorals.map(v=>({id:v.id,name:safeText(v.name,120),genus:safeText(v.genus,120),acquisitionDate:safeDate(v.acquisitionDate),photos:safePhotos(v.photos,50),createdAt:created(v)})).filter(v=>v.name);
@@ -131,10 +134,11 @@ const selectedFish = () => data.fish.find(f=>f.id===fishTab);
 const selectedCoral = () => data.corals.find(c=>c.id===coralTab);
 const fishDetailShown = () => !!selectedFish()&&(!narrowQuery.matches||fishDetailOpen);
 const coralDetailShown = () => !!selectedCoral()&&(!narrowQuery.matches||coralDetailOpen);
-function primaryLabel(){return {fish:fishDetailShown()?'Add Entry':'Add Fish',coral:coralDetailShown()?'Add Note':'Add Coral',visual:'Add Entry',goals:'Add Goal'}[activeTab]||'Log Data'}
+function primaryLabel(){return {fish:fishDetailShown()?'Add Entry':'Add Fish',coral:coralDetailShown()?'Add Note':'Add Coral',visual:'Add Entry'}[activeTab]||'Log Data'}
 function render(){renderNav();primaryAction.textContent=primaryLabel();
+  if(heroTimer){clearInterval(heroTimer);heroTimer=null}
   const anim=nextAnim,motion=!reducedMotion.matches;nextAnim='';animateChart=!!anim;
-  ({home:renderHome,testing:renderTesting,water:renderWater,dosing:renderDosing,fish:renderFish,coral:renderCoral,visual:renderVisual,goals:renderGoals}[activeTab]||renderHome)();
+  ({home:renderHome,feed:renderFeed,testing:renderTesting,water:renderWater,dosing:renderDosing,fish:renderFish,coral:renderCoral,visual:renderVisual}[activeTab]||renderHome)();
   wirePhotos();openSwipeRow=null;animateChart=false;markLoadedImages(main);
   // One-shot motion requested by a user action (never by background sync re-renders).
   if(anim&&motion){main.firstElementChild?.classList.add(`anim-${anim}`);main.querySelectorAll('.list,.entity-list,.timeline,.notes-list,.home-stats').forEach(l=>l.classList.add('stagger'));main.querySelectorAll('[data-count]').forEach(el=>countUp(el));staggerChartDots()}
@@ -153,7 +157,7 @@ function staggerChartDots(){main.querySelectorAll('.chart-animate').forEach(svg=
 primaryAction.onclick=()=>{
   if(activeTab==='fish')return fishDetailShown()?openEditor('fishEntry',null,{fish:fishTab}):openEditor('fish');
   if(activeTab==='coral')return coralDetailShown()?openEditor('coralNote',null,{coralId:coralTab}):openEditor('coral');
-  openEditor({water:'water',dosing:'dose',visual:'visual',goals:'goal'}[activeTab]||'test');
+  openEditor({water:'water',dosing:'dose',visual:'visual',feed:'feed'}[activeTab]||'test');
 };
 narrowQuery.addEventListener('change',()=>{if(currentUser)render()});
 let lastWidth=innerWidth,resizeTimer;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{placeIndicator();if(innerWidth===lastWidth)return;lastWidth=innerWidth;if(currentUser&&['testing','water'].includes(activeTab)&&!document.querySelector('dialog[open]'))render()},150)});
@@ -165,20 +169,37 @@ function wirePhotos(){main.querySelectorAll('[data-photo]').forEach(b=>b.onclick
 function findKind(kind,id){return (kind==='coralNote'?[...data.coralNotes,...legacyCoralNotes]:data[KIND_COLLECTION[kind]]||[]).find(x=>x.id===id)}
 
 // ---- Home ----
+function collectHeroPhotos(){return data.photos.filter(p=>p.owner==='fish'||p.owner==='visual').sort((a,b)=>`${b.takenDate} ${b.createdAt}`.localeCompare(`${a.takenDate} ${a.createdAt}`)).slice(0,10)}
+function heroCaption(p){if(!p)return '';if(p.owner==='fish'){const f=data.fish.find(x=>x.id===p.ownerId);return `${f?f.name+' · ':''}${fmtDate(p.takenDate)}`}return `Tank Visual · ${fmtDate(p.takenDate)}`}
+// Only the current and next slide's photo are ever loaded: the rest sit as data-src until it's their turn.
+function ensureSlideLoaded(i){const wrap=$('#homeSlideshow'),slide=wrap?.children[i],img=slide?.querySelector('img[data-src]');if(img){img.src=img.dataset.src;img.removeAttribute('data-src')}}
+function advanceHero(){if(document.hidden)return;const wrap=$('#homeSlideshow');if(!wrap)return;const slides=[...wrap.children];
+  slides[heroIndex]?.classList.remove('active');heroIndex=(heroIndex+1)%slides.length;slides[heroIndex]?.classList.add('active');ensureSlideLoaded((heroIndex+1)%slides.length);
+  const cap=$('#homePhotoCaption');if(cap)cap.textContent=heroCaption(heroPhotos[heroIndex])}
 function renderHome(){
-  const hero=latestPhoto('visual'),lastWater=[...data.waterChanges].sort(byNewest)[0],lastAto=[...data.atoRefills].sort(byNewest)[0];
+  heroPhotos=collectHeroPhotos();heroIndex=0;
+  const hasPhotos=heroPhotos.length>0,lastWater=[...data.waterChanges].sort(byNewest)[0],lastAto=[...data.atoRefills].sort(byNewest)[0];
   main.innerHTML=`<section class="screen home">
-    <figure class="home-hero">${hero?`<button type="button" class="home-photo skeleton" data-photo="${esc(hero.id)}" aria-label="Open latest tank photo"><img class="home-photo-low" src="${esc(photoSize(hero.url,'c_fill,g_auto,w_48,h_30,q_auto,f_auto'))}" alt="" crossorigin="anonymous"><img class="fade-img" src="${esc(fullSrc(hero))}" alt="Latest tank photo, ${esc(fmtDate(hero.takenDate))}" crossorigin="anonymous">${shimmerOn()&&!reducedMotion.matches?'<span class="shimmer" aria-hidden="true"></span>':''}</button>`:`<button type="button" class="home-photo home-photo-empty" id="homeAddPhoto">${icon(ICONS.camera)}<span>Add a tank photo in Tank Visual</span></button>`}
-      <figcaption><h2 class="home-title">${TANK_GALLONS} Gallon Reef</h2>${hero?`<span class="muted">Photo from ${esc(fmtDate(hero.takenDate))}</span>`:''}</figcaption></figure>
+    <figure class="home-hero">${hasPhotos?`<div class="home-slideshow" id="homeSlideshow">${heroPhotos.map((p,i)=>`<button type="button" class="home-photo skeleton slide ${i===0?'active':''}" data-photo="${esc(p.id)}" aria-label="Open photo">${i===0?`<img class="fade-img" src="${esc(fullSrc(p))}" alt="Photo, ${esc(fmtDate(p.takenDate))}" crossorigin="anonymous">`:`<img class="fade-img" data-src="${esc(fullSrc(p))}" alt="" crossorigin="anonymous">`}${i===0&&shimmerOn()&&!reducedMotion.matches?'<span class="shimmer" aria-hidden="true"></span>':''}</button>`).join('')}</div>`:`<button type="button" class="home-photo home-photo-empty" id="homeAddPhoto">${icon(ICONS.camera)}<span>Add a tank or fish photo</span></button>`}
+      <figcaption><h2 class="home-title">${TANK_GALLONS} Gallon Reef</h2>${hasPhotos?`<span class="muted" id="homePhotoCaption">${esc(heroCaption(heroPhotos[0]))}</span>`:''}</figcaption></figure>
     <div class="home-stats">
       <div class="home-stat">${lastWater?`<p><strong data-count="${daysSince(lastWater.date)}">${dayCount(daysSince(lastWater.date))}</strong> since last water change</p>`:`<p>No water changes logged yet</p>`}</div>
       <div class="home-stat">${lastAto?`<p><strong data-count="${daysSince(lastAto.date)}">${dayCount(daysSince(lastAto.date))}</strong> since ATO refill</p>`:`<p>No ATO refill logged yet</p>`}<button type="button" class="button primary" id="atoRefilled">Refilled!</button></div>
-    </div></section>`;
+    </div>
+    ${renderHomeGoals()}</section>`;
   $('#homeAddPhoto')?.addEventListener('click',()=>{activeTab='visual';render()});
+  main.querySelector('[data-add-goal]')?.addEventListener('click',()=>openEditor('goal'));
   $('#atoRefilled').onclick=e=>{const btn=e.currentTarget,stat=btn.parentElement,strong=stat.querySelector('[data-count]'),record={id:uid(),date:today(),time:nowTime(),createdAt:timestamp()};upsertLocal('atoRefills',record);cloudSet('atoRefills',record);
     // A short "Done" moment: the button checks off and the counter rolls down to 0 before the screen refreshes.
     if(reducedMotion.matches)render();else{renderHoldUntil=Date.now()+1400;btn.classList.add('done');btn.innerHTML=`${icon(ICONS.check)}<span>Done</span>`;if(strong){const from=+strong.dataset.count;strong.dataset.count='0';countUp(strong,from)}else stat.querySelector('p').innerHTML=`<strong>${dayCount(0)}</strong> since ATO refill`;setTimeout(()=>{renderHoldUntil=0;render()},1400)}toast('ATO refill logged',{label:'Undo',run:()=>{data.atoRefills=data.atoRefills.filter(x=>x.id!==record.id);render();cloudDelete('atoRefills',record.id)}})};
+  wireRows();
+  if(hasPhotos&&heroPhotos.length>1&&!reducedMotion.matches){ensureSlideLoaded(1);heroTimer=setInterval(advanceHero,4500)}
 }
+function renderHomeGoals(){const rows=[...data.goals].sort((a,b)=>(a.targetDate||'9999').localeCompare(b.targetDate||'9999')||a.createdAt.localeCompare(b.createdAt));
+  return `<section class="home-goals"><div class="detail-label-row"><h3 class="detail-label">Goals</h3><button type="button" class="button secondary" data-add-goal>Add Goal</button></div><div class="list">${rows.length?rows.map(r=>`<article class="row row-media"><div class="row-copy"><strong>${esc(r.title)}</strong>${r.targetDate?`<span>Target ${esc(fmtDate(r.targetDate))}</span>`:''}${r.notes?`<small>${esc(r.notes)}</small>`:''}${photosFor('goal',r.id).length?photoStrip('goal',r.id):''}</div>${rowActions('goal',r.id,'goal')}</article>`).join(''):empty('No goals yet','Add something you want to change, add, or achieve with the tank.')}</div></section>`}
+
+// ---- Feed ----
+function renderFeed(){const rows=[...data.feedings].sort(byNewest);main.innerHTML=`<section class="screen stack">${screenHead('Feed','A log of what and when the tank was fed.')} ${rows.length?`<div class="timeline">${rows.map(r=>`<article class="timeline-item"><time>${esc(fmtWhen(r.date,r.time))}</time><strong>${esc(r.food)}</strong>${r.notes?`<div class="muted">${esc(r.notes)}</div>`:''}<div class="timeline-actions">${rowActions('feed',r.id)}</div></article>`).join('')}</div>`:empty('No feedings logged yet','Log what you feed the tank and when.')}</section>`;wireRows()}
 
 // ---- Testing ----
 const testTime = r => Date.parse(`${r.date}T${r.time||'12:00'}:00`);
@@ -223,8 +244,8 @@ function renderWater(){const rows=[...data.waterChanges].sort(byNewest),last=row
 function renderDosing(){const rows=[...data.doses].sort(byNewest);main.innerHTML=`<section class="screen stack">${screenHead('Dosing','A simple history of what was added and when.')} ${rows.length?`<div class="timeline">${rows.map(r=>`<article class="timeline-item"><time>${esc(fmtWhen(r.date,r.time))}</time><strong>${esc(r.additive)}${r.amount?` · ${esc(r.amount)}`:''}</strong>${r.notes?`<div class="muted">${esc(r.notes)}</div>`:''}<div class="timeline-actions">${rowActions('dose',r.id)}</div></article>`).join('')}</div>`:empty('No dosing history','Add a dose when you add something to the tank.')}</section>`;wireRows()}
 
 // ---- Fish & Coral: vertical list with latest photo, plus a detail panel ----
-const sortedFish = () => [...data.fish].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.name.localeCompare(b.name));
-const sortedCorals = () => [...data.corals].sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.name.localeCompare(b.name));
+const sortedFish = () => [...data.fish].sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
+const sortedCorals = () => [...data.corals].sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
 function entityList(items,{owner,fallbackIcon,selected,dataAttr,meta,addLabel,addAttr}){return `<div class="entity-list">${items.map(item=>`<button type="button" class="entity ${item.id===selected&&!narrowQuery.matches?'active':''}" ${dataAttr}="${esc(item.id)}">${avatar(latestPhoto(owner,item.id),fallbackIcon)}<span class="entity-copy"><span class="entity-name">${esc(item.name)}</span><span class="entity-meta">${esc(meta(item))}</span></span></button>`).join('')}<button type="button" class="entity entity-add" ${addAttr}><span class="avatar avatar-empty">${icon(ICONS.plus)}</span><span class="entity-copy"><span class="entity-name">${esc(addLabel)}</span></span></button></div>`}
 function detailBack(label,attr){return narrowQuery.matches?`<button type="button" class="back-link" ${attr}>${icon(ICONS.back)}<span>${esc(label)}</span></button>`:''}
 function renderFish(){const fish=sortedFish();if(!selectedFish())fishTab=fish[0]?.id||'';const sel=selectedFish(),showDetail=fishDetailShown(),showList=!narrowQuery.matches||!showDetail;
@@ -240,7 +261,6 @@ function coralDetail(c){const notes=notesFor(c.id).sort(byNewest);return `<secti
 
 // ---- Tank Visual & Goals ----
 function renderVisual(){const rows=[...data.tankVisual].sort(byNewest);main.innerHTML=`<section class="screen stack">${screenHead('Tank Visual','A dated visual journal of the tank.')}<div class="list">${rows.length?rows.map(r=>`<article class="row row-media"><div class="row-copy"><strong>${esc(fmtDate(r.date))}</strong>${r.notes?`<span>${esc(r.notes)}</span>`:''}${photoStrip('visual',r.id)}</div>${rowActions('visual',r.id)}</article>`).join(''):empty('No visual entries yet','Add a dated entry with a photo of the tank.')}</div></section>`;wireRows()}
-function renderGoals(){const rows=[...data.goals].sort((a,b)=>(a.targetDate||'9999').localeCompare(b.targetDate||'9999')||a.createdAt.localeCompare(b.createdAt));main.innerHTML=`<section class="screen stack">${screenHead('Goals','Future ideas for the tank.')}<div class="list">${rows.length?rows.map(r=>`<article class="row row-media"><div class="row-copy"><strong>${esc(r.title)}</strong>${r.targetDate?`<span>Target ${esc(fmtDate(r.targetDate))}</span>`:''}${r.notes?`<small>${esc(r.notes)}</small>`:''}${photosFor('goal',r.id).length?photoStrip('goal',r.id):''}</div>${rowActions('goal',r.id,'goal')}</article>`).join(''):empty('No goals yet','Add something you want to change, add, or achieve with the tank.')}</div></section>`;wireRows()}
 
 // ---- Photo viewer ----
 async function openPhotoViewer(id){const p=data.photos.find(x=>x.id===id);if(!p)return;photoDialog.dataset.photoId=p.id;
@@ -281,6 +301,7 @@ function openEditor(kind,item=null,ctx={}){const editing=!!item,id=item?.id||uid
   if(kind==='test'){const type=item?.type||testType;title=editing?'Edit reading':'Log reading';fields=field('Parameter',`<select name="type">${TEST_TYPES.map(([k,l])=>`<option value="${k}" ${k===type?'selected':''}>${esc(l)}</option>`).join('')}</select>`)+field('Measurement',`<input name="value" type="number" step="any" inputmode="decimal" required value="${editing?item.value:''}">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(editing?item.time:nowTime())}">`)}
   if(kind==='water'){title=editing?'Edit water change':'Log water change';fields=field('Gallons changed',`<input name="gallons" type="number" min="0.1" max="96" step="0.1" inputmode="decimal" required value="${esc(item?.gallons||'')}">`)+field('Date',dateInput('date',item?.date||today()))+field('Notes',`<textarea name="notes" maxlength="1000" placeholder="Optional">${esc(item?.notes||'')}</textarea>`,'full')}
   if(kind==='dose'){title=editing?'Edit dose':'Log dose';fields=field('Additive',`<input name="additive" maxlength="120" required value="${esc(item?.additive||'')}" autocomplete="off">`)+field('Amount',`<input name="amount" maxlength="80" value="${esc(item?.amount||'')}" placeholder="e.g. 5 mL">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(item?.time||'')}">`)+field('Notes',`<textarea name="notes" maxlength="1000">${esc(item?.notes||'')}</textarea>`,'full')}
+  if(kind==='feed'){title=editing?'Edit feeding':'Log feeding';fields=field('Food type',`<input name="food" maxlength="120" required value="${esc(item?.food||'')}" autocomplete="off">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(editing?item.time:nowTime())}">`)+field('Notes',`<textarea name="notes" maxlength="500" placeholder="Optional">${esc(item?.notes||'')}</textarea>`,'full')}
   if(kind==='fish'){title=editing?'Edit fish':'Add fish';fields=field('Name',`<input name="name" maxlength="80" required value="${esc(item?.name||'')}" autocomplete="off">`,'full')}
   if(kind==='fishEntry'){const fishId=item?.fish||ctx.fish||fishTab;title=editing?'Edit fish entry':'Add fish entry';fields=field('Animal',`<select name="fish">${sortedFish().map(f=>`<option value="${esc(f.id)}" ${f.id===fishId?'selected':''}>${esc(f.name)}</option>`).join('')}</select>`)+field('Type',`<select name="kind"><option value="feeding" ${(item?.kind||'feeding')==='feeding'?'selected':''}>Feeding</option><option value="behavior" ${item?.kind==='behavior'?'selected':''}>Behavior</option></select>`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(item?.time||'')}">`)+field('Note',`<textarea name="text" maxlength="2000" required>${esc(item?.text||'')}</textarea>`,'full')}
   if(kind==='coral'){title=editing?'Edit coral':'Add coral';fields=field('Name',`<input name="name" maxlength="120" required value="${esc(item?.name||'')}">`)+field('Genus',`<input name="genus" maxlength="120" value="${esc(item?.genus||'')}">`)+field('Acquisition date',dateInput('acquisitionDate',item?.acquisitionDate,false))}
@@ -297,7 +318,7 @@ function wirePhotoInput(root){const input=root.querySelector('[data-photo-input]
   input.addEventListener('change',()=>{const files=[...(input.files||[])].slice(0,20);pendingFiles=files;root._uploaded=[];preview.querySelectorAll('img').forEach(i=>URL.revokeObjectURL(i.src));preview.innerHTML=files.map(()=>'<img alt="">').join('');preview.querySelectorAll('img').forEach((img,i)=>img.src=URL.createObjectURL(files[i]));preview.hidden=!files.length;preview.classList.toggle('photo-preview-grid',files.length>1);
     if(files.length){if(!date.dataset.touched&&fileDate(files[0])<=today())date.value=fileDate(files[0]);date.required=true}})}
 // Return-key labels and capitalization that match each field on phone keyboards.
-function tuneKeyboard(root){root.querySelectorAll('input[type=text],input:not([type]),input[type=number]').forEach(i=>i.enterKeyHint='done');root.querySelectorAll('[name=name],[name=genus],[name=additive]').forEach(i=>i.autocapitalize='words');root.querySelectorAll('textarea,[name=title],[name=caption]').forEach(i=>i.autocapitalize='sentences')}
+function tuneKeyboard(root){root.querySelectorAll('input[type=text],input:not([type]),input[type=number]').forEach(i=>i.enterKeyHint='done');root.querySelectorAll('[name=name],[name=genus],[name=additive],[name=food]').forEach(i=>i.autocapitalize='words');root.querySelectorAll('textarea,[name=title],[name=caption]').forEach(i=>i.autocapitalize='sentences')}
 const formState = () => JSON.stringify([...new FormData(editorForm)].map(([k,v])=>[k,v instanceof File?v.name:v]));
 // Unsaved edits survive an outside tap or Escape; Cancel and × still discard on purpose.
 function guardEditorClose(){if(formState()===editorSnapshot&&!pendingFiles.length)return true;editorForm.querySelector('.dialog-hint').textContent='You have unsaved changes. Save them, or tap Cancel to discard.';return false}
@@ -306,6 +327,7 @@ editorForm.onsubmit=async e=>{e.preventDefault();const fd=new FormData(editorFor
   if(kind==='test')record={id,type:String(fd.get('type')),value:finite(fd.get('value')),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),createdAt:old?.createdAt||now};
   if(kind==='water')record={id,gallons:finite(fd.get('gallons'),.1,96),date:safeDate(fd.get('date'))||today(),notes:safeText(fd.get('notes'),1000),createdAt:old?.createdAt||now};
   if(kind==='dose')record={id,additive:safeText(fd.get('additive'),120),amount:safeText(fd.get('amount'),80),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),notes:safeText(fd.get('notes'),1000),createdAt:old?.createdAt||now};
+  if(kind==='feed')record={id,food:safeText(fd.get('food'),120),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),notes:safeText(fd.get('notes'),500),createdAt:old?.createdAt||now};
   if(kind==='fish'){record={id,name:safeText(fd.get('name'),80),createdAt:old?.createdAt||now};if(!old){fishTab=id;fishDetailOpen=true}}
   if(kind==='fishEntry')record={id,fish:String(fd.get('fish')),kind:String(fd.get('kind')),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),text:safeText(fd.get('text'),2000),photos:old?.photos||[],createdAt:old?.createdAt||now};
   if(kind==='coral'){record={id,name:safeText(fd.get('name'),120),genus:safeText(fd.get('genus'),120),acquisitionDate:safeDate(fd.get('acquisitionDate')),photos:old?.photos||[],createdAt:old?.createdAt||now};if(!old){coralTab=id;coralDetailOpen=true}}
