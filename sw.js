@@ -1,7 +1,7 @@
 'use strict';
 
 // App-shell cache only. Private reef data lives in Firestore's IndexedDB cache, never here.
-const SHELL_CACHE = 'coraldar-shell-v7';
+const SHELL_CACHE = 'coraldar-shell-v8';
 const FONT_CACHE = 'coraldar-fonts-v1';
 const SHELL = ['./','index.html','styles.css','app.js','manifest.webmanifest','app-icon.png','app-icon-maskable.png',
   'vendor/firebase/12.18.0/firebase-app.js','vendor/firebase/12.18.0/firebase-auth.js','vendor/firebase/12.18.0/firebase-firestore.js'];
