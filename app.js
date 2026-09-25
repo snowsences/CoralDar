@@ -11,7 +11,7 @@ const SHIMMER_KEY = 'coraldar-shimmer'; // per-device preference for the Home ph
 const STORAGE_KEY = 'coraldar-v1'; // legacy local mirror; migrated to Firestore's offline cache on sign-in
 const BACKUP_FORMAT = 'coraldar-backup';
 const LEGACY_ENCRYPTED_FORMAT = 'coraldar-encrypted-backup'; // older password-protected backups; still restorable
-const COLLECTIONS = ['tests','waterChanges','doses','fish','fishEntries','feedings','corals','coralNotes','tankVisual','goals','photos','atoRefills','meta'];
+const COLLECTIONS = ['tests','waterChanges','doses','fish','fishEntries','feedings','foodTypes','corals','coralNotes','tankVisual','goals','photos','atoRefills','meta'];
 // [key, label, unit, chart color, target low, target high] — targets are intentionally fixed.
 const TEST_TYPES = [
   ['temperature','Temperature','°F','#ef5f59',78,81],['salinity','Salinity','SG','#5b9cf0',1.025,1.026],['ph','pH','','#44c9c0',7.8,8.4],
@@ -20,6 +20,10 @@ const TEST_TYPES = [
 ];
 // Starting fish list (ids match entries logged before the list became editable).
 const DEFAULT_FISH = [['midas-blenny','Midas Blenny'],['clownfish','Clownfish'],['azure-damsel','Azure Damsel'],['mandarin-goby','Mandarin Goby'],['invertebrates','Invertebrates']];
+// [key, label, chart color] for a Food Type's diet.
+const FOOD_DIETS = [['herbivore','Herbivore','#64b87a'],['carnivore','Carnivore','#ef5f59']];
+const FEED_RANGES = [['1w','1 Week',7],['1m','1 Month',30],['3m','3 Months',92]];
+const FEED_DAY_MAX = 10;
 const PHOTO_OWNERS = ['fish','coral','visual','goal'];
 const ICONS = {
   edit:'M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4ZM13.5 6.5l4 4',close:'M6 6l12 12M18 6 6 18',plus:'M12 5v14M5 12h14',back:'M15 5l-7 7 7 7',
@@ -30,12 +34,12 @@ const ICONS = {
 };
 const NAV = [
   ['home','Home','M3 11.5 12 4l9 7.5M5.5 9.5V20h13V9.5M10 20v-5h4v5'],
-  ['feed','Feed','M3 14c1.4 -2.4 3.6 -2.4 5 0s3.6 2.4 5 0 3.6 -2.4 5 0 3.6 2.4 5 0M7 5h.01M12 3.4h.01M17 5h.01'],
+  ['feed','Feed','M12 3h.01M10 7h.01M14 7h.01M8 11h.01M12 11h.01M16 11h.01M6 15h.01M10 15h.01M14 15h.01M18 15h.01M9 19h.01M15 19h.01'],
   ['testing','Testing','M4 19V5m0 7h16M8 5v14M12 8v8M16 6v12'],
   ['water','Water','M12 3s6 6.2 6 11a6 6 0 0 1-12 0c0-4.8 6-11 6-11Z','Water changes'],['dosing','Dosing','M9 3h6M10 3v5l-4 7a4 4 0 0 0 3.5 6h5a4 4 0 0 0 3.5-6l-4-7V3M8 15h8'],
   ['fish','Fish',ICONS.fish],['coral','Coral',ICONS.coral],['visual','Tank Visual','M3 5h18v14H3zM7 15l3-3 3 3 2-2 3 3M8 9h.01']
 ];
-const KIND_COLLECTION = {test:'tests',water:'waterChanges',dose:'doses',feed:'feedings',fish:'fish',fishEntry:'fishEntries',coral:'corals',coralNote:'coralNotes',visual:'tankVisual',goal:'goals',photo:'photos',ato:'atoRefills'};
+const KIND_COLLECTION = {test:'tests',water:'waterChanges',dose:'doses',feed:'feedings',foodType:'foodTypes',fish:'fish',fishEntry:'fishEntries',coral:'corals',coralNote:'coralNotes',visual:'tankVisual',goal:'goals',photo:'photos',ato:'atoRefills'};
 
 const $ = s => document.querySelector(s);
 const main = $('#main'), nav = $('#mainNav'), primaryAction = $('#primaryAction'), editorDialog = $('#editorDialog'), editorForm = $('#editorForm'), settingsDialog = $('#settingsDialog'), photoDialog = $('#photoDialog');
@@ -47,7 +51,7 @@ let activeTab = 'home';
 let testType = 'temperature', testRange = '3m', fishTab = '', coralTab = '', fishDetailOpen = false, coralDetailOpen = false, heroPhotos = [], heroIndex = 0, heroTimer = null;
 let firebase = null, currentUser = null, unsubscribers = [], toastTimer, renderQueued = false, editorSnapshot = '', authNotice = '', cacheReady = Promise.resolve(), pendingSync = {}, legacyCoralNotes = [], pendingFiles = [], nextAnim = '', animateChart = false, highlightId = '', highlight = null, renderHoldUntil = 0, renderSkipped = false;
 
-function emptyData(){ return {tests:[],waterChanges:[],doses:[],fish:[],fishEntries:[],feedings:[],corals:[],coralNotes:[],tankVisual:[],goals:[],photos:[],atoRefills:[],meta:[]}; }
+function emptyData(){ return {tests:[],waterChanges:[],doses:[],fish:[],fishEntries:[],feedings:[],foodTypes:[],corals:[],coralNotes:[],tankVisual:[],goals:[],photos:[],atoRefills:[],meta:[]}; }
 function readLegacyLocal(){ try{const raw=localStorage.getItem(STORAGE_KEY);return raw?normalizeData(JSON.parse(raw)):null}catch{return null} }
 function clearPrivateLocal(){ localStorage.removeItem(STORAGE_KEY); data=emptyData(); pendingSync={}; legacyCoralNotes=[]; }
 const esc = value => String(value??'').replace(/[&<>'"]/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
@@ -84,7 +88,8 @@ function normalizeData(raw){
   base.waterChanges=list('waterChanges',5000).map(v=>({id:safeId(v.id),gallons:finite(v.gallons,0,TANK_GALLONS*3),date:safeDate(v.date)||today(),notes:safeText(v.notes,1000),createdAt:created(v)}));
   base.doses=list('doses',10000).map(v=>({id:safeId(v.id),additive:safeText(v.additive,120),amount:safeText(v.amount,80),date:safeDate(v.date)||today(),time:safeTime(v.time),notes:safeText(v.notes,1000),createdAt:created(v)})).filter(v=>v.additive);
   base.fish=list('fish',500).map(v=>({id:safeId(v.id),name:safeText(v.name,80),createdAt:created(v)})).filter(v=>v.name);
-  base.feedings=list('feedings',10000).map(v=>({id:safeId(v.id),food:safeText(v.food,120),date:safeDate(v.date)||today(),time:safeTime(v.time),notes:safeText(v.notes,500),createdAt:created(v)})).filter(v=>v.food);
+  base.feedings=list('feedings',10000).map(v=>({id:safeId(v.id),foodType:ID_PATTERN.test(String(v.foodType||''))?String(v.foodType):'',food:safeText(v.food,120),date:safeDate(v.date)||today(),time:safeTime(v.time),notes:safeText(v.notes,500),createdAt:created(v)})).filter(v=>v.foodType||v.food);
+  base.foodTypes=list('foodTypes',500).map(v=>({id:safeId(v.id),name:safeText(v.name,80),diet:FOOD_DIETS.some(d=>d[0]===v.diet)?v.diet:'herbivore',createdAt:created(v)})).filter(v=>v.name);
   base.fishEntries=list('fishEntries',10000).map(v=>({id:safeId(v.id),fish:ID_PATTERN.test(String(v.fish||''))?String(v.fish):'',kind:['feeding','behavior'].includes(v.kind)?v.kind:'behavior',date:safeDate(v.date)||today(),time:safeTime(v.time),text:safeText(v.text,2000),photos:safePhotos(v.photos,20),createdAt:created(v)})).filter(v=>v.text&&v.fish);
   const rawCorals=list('corals',1000).map(v=>({...v,id:safeId(v.id)}));
   base.corals=rawCorals.map(v=>({id:v.id,name:safeText(v.name,120),genus:safeText(v.genus,120),acquisitionDate:safeDate(v.acquisitionDate),photos:safePhotos(v.photos,50),createdAt:created(v)})).filter(v=>v.name);
@@ -160,7 +165,7 @@ primaryAction.onclick=()=>{
   openEditor({water:'water',dosing:'dose',visual:'visual',feed:'feed'}[activeTab]||'test');
 };
 narrowQuery.addEventListener('change',()=>{if(currentUser)render()});
-let lastWidth=innerWidth,resizeTimer;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{placeIndicator();if(innerWidth===lastWidth)return;lastWidth=innerWidth;if(currentUser&&['testing','water'].includes(activeTab)&&!document.querySelector('dialog[open]'))render()},150)});
+let lastWidth=innerWidth,resizeTimer;addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{placeIndicator();if(innerWidth===lastWidth)return;lastWidth=innerWidth;if(currentUser&&['testing','water','feed'].includes(activeTab)&&!document.querySelector('dialog[open]'))render()},150)});
 function screenHead(title,sub=''){return `<div class="screen-head"><div><h2>${esc(title)}</h2>${sub?`<p>${esc(sub)}</p>`:''}</div></div>`}
 function empty(title,copy){return `<div class="empty"><div class="empty-icon">${icon(ICONS.bubbles)}</div><h3>${esc(title)}</h3><div>${esc(copy)}</div></div>`}
 function rowActions(kind,id,photoOwner=''){return `<div class="row-actions">${photoOwner?`<button class="row-action" data-add-photo="${photoOwner}" data-owner-id="${esc(id)}" aria-label="Add photo">${icon(ICONS.camera)}</button>`:''}<button class="row-action" data-edit="${kind}" data-id="${esc(id)}" aria-label="Edit">${icon(ICONS.edit)}</button><button class="row-action" data-delete="${kind}" data-id="${esc(id)}" aria-label="Delete">${icon(ICONS.close)}</button></div>`}
@@ -196,10 +201,37 @@ function renderHome(){
   if(hasPhotos&&heroPhotos.length>1&&!reducedMotion.matches){ensureSlideLoaded(1);heroTimer=setInterval(advanceHero,4500)}
 }
 function renderHomeGoals(){const rows=[...data.goals].sort((a,b)=>(a.targetDate||'9999').localeCompare(b.targetDate||'9999')||a.createdAt.localeCompare(b.createdAt));
-  return `<section class="home-goals"><div class="detail-label-row"><h3 class="detail-label">Goals</h3><button type="button" class="button secondary" data-add-goal>Add Goal</button></div><div class="list">${rows.length?rows.map(r=>`<article class="row row-media"><div class="row-copy"><strong>${esc(r.title)}</strong>${r.targetDate?`<span>Target ${esc(fmtDate(r.targetDate))}</span>`:''}${r.notes?`<small>${esc(r.notes)}</small>`:''}${photosFor('goal',r.id).length?photoStrip('goal',r.id):''}</div>${rowActions('goal',r.id,'goal')}</article>`).join(''):empty('No goals yet','Add something you want to change, add, or achieve with the tank.')}</div></section>`}
+  return `<section class="home-goals"><div class="detail-label-row"><h3 class="detail-label">Goals</h3><button type="button" class="button secondary" data-add-goal>Add Goal</button></div><div class="list">${rows.length?rows.map(r=>`<article class="row row-media"><div class="row-copy"><strong>${esc(r.title)}</strong>${r.targetDate?`<span>Target ${esc(fmtDate(r.targetDate))}</span>`:''}${r.notes?`<small class="notes-text">${esc(r.notes)}</small>`:''}${photosFor('goal',r.id).length?photoStrip('goal',r.id):''}</div>${rowActions('goal',r.id,'goal')}</article>`).join(''):empty('No goals yet','Add something you want to change, add, or achieve with the tank.')}</div></section>`}
 
 // ---- Feed ----
-function renderFeed(){const rows=[...data.feedings].sort(byNewest);main.innerHTML=`<section class="screen stack">${screenHead('Feed','A log of what and when the tank was fed.')} ${rows.length?`<div class="timeline">${rows.map(r=>`<article class="timeline-item"><time>${esc(fmtWhen(r.date,r.time))}</time><strong>${esc(r.food)}</strong>${r.notes?`<div class="muted">${esc(r.notes)}</div>`:''}<div class="timeline-actions">${rowActions('feed',r.id)}</div></article>`).join('')}</div>`:empty('No feedings logged yet','Log what you feed the tank and when.')}</section>`;wireRows()}
+let feedRange = '1w';
+const sortedFoodTypes = () => [...data.foodTypes].sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'}));
+const foodTypeFor = r => data.foodTypes.find(f=>f.id===r.foodType);
+const foodTypeName = r => foodTypeFor(r)?.name || r.food || 'Food';
+const foodDietColor = r => (FOOD_DIETS.find(d=>d[0]===foodTypeFor(r)?.diet)||[])[2] || '#8a97a0';
+function feedChartPanel(){return `<div class="panel test-panel feed-chart-panel"><div class="toolbar toolbar-split"><div><strong>Feedings chart</strong><div class="muted subline"><span class="diet-tag diet-herbivore">Herbivore</span> <span class="diet-tag diet-carnivore">Carnivore</span></div></div><div class="chips">${FEED_RANGES.map(([id,label])=>`<button class="chip ${id===feedRange?'active':''}" data-feed-range="${id}">${label}</button>`).join('')}</div></div><div class="chart-wrap">${feedBarChart()}</div></div>`}
+// One bar per day; each feeding logged that day stacks one colored unit, capped at the fixed FEED_DAY_MAX y-axis.
+function feedBarChart(){
+  const days=(FEED_RANGES.find(([id])=>id===feedRange)||FEED_RANGES[0])[2];
+  const end=Date.parse(today()+'T12:00:00'),start=end-(days-1)*864e5;
+  const buckets=[];for(let t=start;t<=end;t+=864e5)buckets.push({t,items:[]});
+  for(const r of data.feedings){const t=Date.parse(r.date+'T12:00:00');if(t<start||t>end)continue;const b=buckets.find(x=>x.t===t);if(b)b.items.push(r)}
+  if(!data.feedings.length)return `<div class="empty empty-inset">No feedings in this range.</div>`;
+  const narrow=narrowQuery.matches,w=Math.max(280,Math.round(main.clientWidth-34)),h=narrow?200:240,pad=narrow?14:28,left=pad+16,yMax=FEED_DAY_MAX;
+  const barW=(w-left-pad)/buckets.length,gap=Math.min(barW*.35,narrow?4:10),bw=Math.max(2,barW-gap),unitH=(h-2*pad)/yMax;
+  const fmtDay=t=>new Date(t).toLocaleDateString(undefined,{month:'short',day:'numeric'});
+  const bars=buckets.map((b,i)=>{const x=left+i*barW+gap/2,shown=b.items.slice(0,yMax);
+    return shown.map((r,j)=>{const y=h-pad-(j+1)*unitH;return `<rect class="dot" cx="${x+bw/2}" x="${x}" y="${y}" width="${bw}" height="${Math.max(1,unitH-1)}" rx="1.5" fill="${foodDietColor(r)}"><title>${esc(fmtDate(r.date))}: ${esc(foodTypeName(r))}</title></rect>`}).join('')}).join('');
+  return `<svg class="chart${animateChart&&!reducedMotion.matches?' chart-animate':''}" viewBox="0 0 ${w} ${h}" role="img" aria-label="Feedings chart"><line class="gridline" x1="${left}" y1="${pad}" x2="${left}" y2="${h-pad}"/><line class="gridline" x1="${left}" y1="${h-pad}" x2="${w-pad}" y2="${h-pad}"/>${bars}<text x="${left-6}" y="${pad+4}" text-anchor="end">${yMax}</text><text x="${left-6}" y="${h-pad}" text-anchor="end">0</text><text x="${left}" y="${h-5}">${esc(fmtDay(start))}</text><text x="${w-pad}" text-anchor="end" y="${h-5}">${esc(fmtDay(end))}</text></svg>`;
+}
+function renderFoodTypes(){const rows=sortedFoodTypes();return `<section class="home-goals"><div class="detail-label-row"><h3 class="detail-label">Food Types</h3><button type="button" class="button secondary" data-add-food-type>Add Food Type</button></div><div class="list">${rows.length?rows.map(r=>`<article class="row"><div class="row-copy"><strong>${esc(r.name)}</strong><span class="diet-tag diet-${r.diet}">${esc((FOOD_DIETS.find(d=>d[0]===r.diet)||[])[1]||'')}</span></div>${rowActions('foodType',r.id)}</article>`).join(''):empty('No food types yet','Add a food type and mark it carnivore or herbivore.')}</div></section>`}
+function renderFeed(){const rows=[...data.feedings].sort(byNewest);
+  main.innerHTML=`<section class="screen stack">${screenHead('Feed','A log of what and when the tank was fed.')}${feedChartPanel()}${renderFoodTypes()}${rows.length?`<div class="timeline">${rows.map(r=>`<article class="timeline-item"><time>${esc(fmtWhen(r.date,r.time))}</time><strong>${esc(foodTypeName(r))}</strong>${r.notes?`<div class="muted">${esc(r.notes)}</div>`:''}<div class="timeline-actions">${rowActions('feed',r.id)}</div></article>`).join('')}</div>`:empty('No feedings logged yet','Log what you feed the tank and when.')}</section>`;
+  wireFeed();
+}
+function wireFeed(){main.querySelectorAll('[data-feed-range]').forEach(b=>b.onclick=()=>{feedRange=b.dataset.feedRange;updateFeed(b)});main.querySelector('[data-add-food-type]')?.addEventListener('click',()=>openEditor('foodType'));wireRows()}
+function updateFeed(chip){const motion=!reducedMotion.matches;main.querySelectorAll('[data-feed-range]').forEach(b=>b.classList.toggle('active',b.dataset.feedRange===feedRange));chip?.scrollIntoView({inline:'nearest',block:'nearest',behavior:motion?'smooth':'auto'});
+  animateChart=true;const wrap=main.querySelector('.feed-chart-panel .chart-wrap');if(wrap)wrap.innerHTML=feedBarChart();animateChart=false;if(motion)staggerChartDots()}
 
 // ---- Testing ----
 const testTime = r => Date.parse(`${r.date}T${r.time||'12:00'}:00`);
@@ -301,7 +333,9 @@ function openEditor(kind,item=null,ctx={}){const editing=!!item,id=item?.id||uid
   if(kind==='test'){const type=item?.type||testType;title=editing?'Edit reading':'Log reading';fields=field('Parameter',`<select name="type">${TEST_TYPES.map(([k,l])=>`<option value="${k}" ${k===type?'selected':''}>${esc(l)}</option>`).join('')}</select>`)+field('Measurement',`<input name="value" type="number" step="any" inputmode="decimal" required value="${editing?item.value:''}">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(editing?item.time:nowTime())}">`)}
   if(kind==='water'){title=editing?'Edit water change':'Log water change';fields=field('Gallons changed',`<input name="gallons" type="number" min="0.1" max="96" step="0.1" inputmode="decimal" required value="${esc(item?.gallons||'')}">`)+field('Date',dateInput('date',item?.date||today()))+field('Notes',`<textarea name="notes" maxlength="1000" placeholder="Optional">${esc(item?.notes||'')}</textarea>`,'full')}
   if(kind==='dose'){title=editing?'Edit dose':'Log dose';fields=field('Additive',`<input name="additive" maxlength="120" required value="${esc(item?.additive||'')}" autocomplete="off">`)+field('Amount',`<input name="amount" maxlength="80" value="${esc(item?.amount||'')}" placeholder="e.g. 5 mL">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(item?.time||'')}">`)+field('Notes',`<textarea name="notes" maxlength="1000">${esc(item?.notes||'')}</textarea>`,'full')}
-  if(kind==='feed'){title=editing?'Edit feeding':'Log feeding';fields=field('Food type',`<input name="food" maxlength="120" required value="${esc(item?.food||'')}" autocomplete="off">`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(editing?item.time:nowTime())}">`)+field('Notes',`<textarea name="notes" maxlength="500" placeholder="Optional">${esc(item?.notes||'')}</textarea>`,'full')}
+  if(kind==='feed'){title=editing?'Edit feeding':'Log feeding';const types=sortedFoodTypes(),sel=item?.foodType||types[0]?.id||'';
+    fields=(types.length?field('Food type',`<select name="foodType" required>${types.map(t=>`<option value="${esc(t.id)}" ${t.id===sel?'selected':''}>${esc(t.name)}</option>`).join('')}</select>`):`<div class="field full"><p class="muted" style="margin:0">Add a food type on the Feed tab first.</p></div>`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(editing?item.time:nowTime())}">`)+field('Notes',`<textarea name="notes" maxlength="500" placeholder="Optional">${esc(item?.notes||'')}</textarea>`,'full')}
+  if(kind==='foodType'){title=editing?'Edit food type':'Add food type';fields=field('Name',`<input name="name" maxlength="80" required value="${esc(item?.name||'')}" autocomplete="off">`)+field('Diet',`<select name="diet">${FOOD_DIETS.map(([k,l])=>`<option value="${k}" ${(item?.diet||'herbivore')===k?'selected':''}>${esc(l)}</option>`).join('')}</select>`)}
   if(kind==='fish'){title=editing?'Edit fish':'Add fish';fields=field('Name',`<input name="name" maxlength="80" required value="${esc(item?.name||'')}" autocomplete="off">`,'full')}
   if(kind==='fishEntry'){const fishId=item?.fish||ctx.fish||fishTab;title=editing?'Edit fish entry':'Add fish entry';fields=field('Animal',`<select name="fish">${sortedFish().map(f=>`<option value="${esc(f.id)}" ${f.id===fishId?'selected':''}>${esc(f.name)}</option>`).join('')}</select>`)+field('Type',`<select name="kind"><option value="feeding" ${(item?.kind||'feeding')==='feeding'?'selected':''}>Feeding</option><option value="behavior" ${item?.kind==='behavior'?'selected':''}>Behavior</option></select>`)+field('Date',dateInput('date',item?.date||today()))+field('Time',`<input name="time" type="time" value="${esc(item?.time||'')}">`)+field('Note',`<textarea name="text" maxlength="2000" required>${esc(item?.text||'')}</textarea>`,'full')}
   if(kind==='coral'){title=editing?'Edit coral':'Add coral';fields=field('Name',`<input name="name" maxlength="120" required value="${esc(item?.name||'')}">`)+field('Genus',`<input name="genus" maxlength="120" value="${esc(item?.genus||'')}">`)+field('Acquisition date',dateInput('acquisitionDate',item?.acquisitionDate,false))}
@@ -318,7 +352,7 @@ function wirePhotoInput(root){const input=root.querySelector('[data-photo-input]
   input.addEventListener('change',()=>{const files=[...(input.files||[])].slice(0,20);pendingFiles=files;root._uploaded=[];preview.querySelectorAll('img').forEach(i=>URL.revokeObjectURL(i.src));preview.innerHTML=files.map(()=>'<img alt="">').join('');preview.querySelectorAll('img').forEach((img,i)=>img.src=URL.createObjectURL(files[i]));preview.hidden=!files.length;preview.classList.toggle('photo-preview-grid',files.length>1);
     if(files.length){if(!date.dataset.touched&&fileDate(files[0])<=today())date.value=fileDate(files[0]);date.required=true}})}
 // Return-key labels and capitalization that match each field on phone keyboards.
-function tuneKeyboard(root){root.querySelectorAll('input[type=text],input:not([type]),input[type=number]').forEach(i=>i.enterKeyHint='done');root.querySelectorAll('[name=name],[name=genus],[name=additive],[name=food]').forEach(i=>i.autocapitalize='words');root.querySelectorAll('textarea,[name=title],[name=caption]').forEach(i=>i.autocapitalize='sentences')}
+function tuneKeyboard(root){root.querySelectorAll('input[type=text],input:not([type]),input[type=number]').forEach(i=>i.enterKeyHint='done');root.querySelectorAll('[name=name],[name=genus],[name=additive]').forEach(i=>i.autocapitalize='words');root.querySelectorAll('textarea,[name=title],[name=caption]').forEach(i=>i.autocapitalize='sentences')}
 const formState = () => JSON.stringify([...new FormData(editorForm)].map(([k,v])=>[k,v instanceof File?v.name:v]));
 // Unsaved edits survive an outside tap or Escape; Cancel and × still discard on purpose.
 function guardEditorClose(){if(formState()===editorSnapshot&&!pendingFiles.length)return true;editorForm.querySelector('.dialog-hint').textContent='You have unsaved changes. Save them, or tap Cancel to discard.';return false}
@@ -327,7 +361,8 @@ editorForm.onsubmit=async e=>{e.preventDefault();const fd=new FormData(editorFor
   if(kind==='test')record={id,type:String(fd.get('type')),value:finite(fd.get('value')),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),createdAt:old?.createdAt||now};
   if(kind==='water')record={id,gallons:finite(fd.get('gallons'),.1,96),date:safeDate(fd.get('date'))||today(),notes:safeText(fd.get('notes'),1000),createdAt:old?.createdAt||now};
   if(kind==='dose')record={id,additive:safeText(fd.get('additive'),120),amount:safeText(fd.get('amount'),80),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),notes:safeText(fd.get('notes'),1000),createdAt:old?.createdAt||now};
-  if(kind==='feed')record={id,food:safeText(fd.get('food'),120),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),notes:safeText(fd.get('notes'),500),createdAt:old?.createdAt||now};
+  if(kind==='feed'){if(!fd.get('foodType')){editorForm.querySelector('.dialog-hint').textContent='Add a food type first.';return}record={id,foodType:String(fd.get('foodType')),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),notes:safeText(fd.get('notes'),500),createdAt:old?.createdAt||now}}
+  if(kind==='foodType')record={id,name:safeText(fd.get('name'),80),diet:FOOD_DIETS.some(d=>d[0]===fd.get('diet'))?String(fd.get('diet')):'herbivore',createdAt:old?.createdAt||now};
   if(kind==='fish'){record={id,name:safeText(fd.get('name'),80),createdAt:old?.createdAt||now};if(!old){fishTab=id;fishDetailOpen=true}}
   if(kind==='fishEntry')record={id,fish:String(fd.get('fish')),kind:String(fd.get('kind')),date:safeDate(fd.get('date'))||today(),time:safeTime(fd.get('time')),text:safeText(fd.get('text'),2000),photos:old?.photos||[],createdAt:old?.createdAt||now};
   if(kind==='coral'){record={id,name:safeText(fd.get('name'),120),genus:safeText(fd.get('genus'),120),acquisitionDate:safeDate(fd.get('acquisitionDate')),photos:old?.photos||[],createdAt:old?.createdAt||now};if(!old){coralTab=id;coralDetailOpen=true}}
@@ -366,7 +401,7 @@ function performDelete(kind,id){const collection=KIND_COLLECTION[kind],item=find
   if(kind==='coralNote'&&legacy.length){const coral=data.corals.find(c=>c.id===item.coralId);if(coral)ops.push(...legacyCoralNotes.filter(n=>n.coralId===coral.id).map(n=>['set','coralNotes',n]),['set','corals',coral])}
   if(kind==='fish'&&fishTab===id){fishTab='';fishDetailOpen=false}if(kind==='coral'&&coralTab===id){coralTab='';coralDetailOpen=false}
   render();commitOps(ops).catch(syncError);
-  const label=kind==='fish'||kind==='coral'?`${item.name} deleted`:kind==='photo'?'Photo deleted':kind==='coralNote'?'Note deleted':'Entry deleted';
+  const label=kind==='fish'||kind==='coral'||kind==='foodType'?`${item.name} deleted`:kind==='photo'?'Photo deleted':kind==='coralNote'?'Note deleted':'Entry deleted';
   toast(label,{label:'Undo',run:()=>{for(const [c,r] of all)upsertLocal(c,r);if(kind==='fish'){fishTab=id}if(kind==='coral'){coralTab=id}highlightId=id;render();commitOps(all.map(([c,r])=>['set',c,r])).catch(syncError)}})}
 function wireAutoGrow(root){root.querySelectorAll('textarea').forEach(t=>{const grow=()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,600)+'px';t.style.overflowY=t.scrollHeight>600?'auto':'hidden'};t.addEventListener('input',grow);grow()})}
 // Only treat it as an outside tap if the press also started outside (a text selection dragged past the edge shouldn't close).
